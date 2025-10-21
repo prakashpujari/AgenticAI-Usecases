@@ -69,18 +69,20 @@ def main():
         .company-logo-fixed { width: 90px; top: 8px; right: 8px; opacity: 0.95; }
       }
 
-      /* Footer (author) */
+      /* Footer (author) - centered bottom, bold, no quotes around name */
       .app-footer {
         position: fixed;
-        right: 12px;
+        left: 50%;
+        transform: translateX(-50%);
         bottom: 10px;
         z-index: 9999;
-        font-size: 12px;
-        color: #6b7280;
-        background: rgba(255,255,255,0.85);
-        padding: 6px 10px;
+        font-size: 13px;
+        color: #042034;
+        background: rgba(255,255,255,0.95);
+        padding: 8px 12px;
         border-radius: 8px;
         box-shadow: 0 4px 12px rgba(3,18,37,0.06);
+        font-weight: 700;
       }
 
       /* Responsive: mobile adjustments */
@@ -117,8 +119,8 @@ def main():
 
     st.title("Age & Health Advisor")
 
-    # show author footer (fixed)
-    st.markdown('<div class="app-footer">Developed by "Prakash Pujari"</div>', unsafe_allow_html=True)
+    # show author footer (fixed) — remove quotes and keep bold via CSS
+    st.markdown('<div class="app-footer">Developed by Prakash Pujari</div>', unsafe_allow_html=True)
 
     # Sidebar: gender + weight/height as dropdowns (support child -> adult)
     with st.sidebar:
