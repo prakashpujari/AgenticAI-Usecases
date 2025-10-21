@@ -104,3 +104,55 @@ def recommend_measurements(age_years: int, gender: str = "other") -> Dict[str, s
         "measurements": measurements,
         "tips": " \n".join(tips),
     }
+
+
+def recommend_measurements(age_years, gender=None):
+    """
+    Return a dict with keys: life_stage, measurements (dict), tips (list or str).
+    This function is defensive: it accepts gender==None or unknown values.
+    """
+    life_stage = None
+    tips = []
+    measurements = {}
+
+    # Simple life-stage buckets
+    if age_years < 13:
+        life_stage = "Child"
+        tips.append("Focus on growth, regular pediatric checkups, and active play.")
+    elif age_years < 20:
+        life_stage = "Teen"
+        tips.append("Ensure balanced nutrition and regular physical activity.")
+    elif age_years < 40:
+        life_stage = "Adult"
+        tips.append("Maintain a balance of cardio and strength training.")
+    elif age_years < 60:
+        life_stage = "Middle-aged"
+        tips.append("Prioritize strength training, flexibility, and joint care.")
+    else:
+        life_stage = "Senior"
+        tips.append("Prioritize balance, low-impact cardio, strength, and mobility.")
+
+    # Normalize gender safely (handle None or unexpected types)
+    g = (gender or "").strip().lower()
+    if g in ("male", "m"):
+        measurements = {
+            "Chest_cm": "90-110 (varies by height)",
+            "Waist_cm": "80-100",
+            "Hip_cm": "95-105",
+        }
+    elif g in ("female", "f"):
+        measurements = {
+            "Chest_cm": "80-100 (varies by height)",
+            "Waist_cm": "70-95",
+            "Hip_cm": "95-115",
+        }
+    else:
+        # Generic, non-gendered guidance when gender is unknown/not provided
+        measurements = {
+            "Chest_cm": "80-110 (varies by height and body type)",
+            "Waist_cm": "70-100",
+            "Hip_cm": "90-115",
+        }
+        tips.append("Measurements are generic because gender was not specified.")
+
+    return {"life_stage": life_stage, "measurements": measurements, "tips": "\n".join(tips)}
