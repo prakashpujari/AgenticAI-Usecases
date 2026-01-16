@@ -1,0 +1,33 @@
+search_ai_jobs:
+  description: >
+    Search for {job_title} positions on Google Jobs, LinkedIn, and Dice.
+    Focus on finding roles related to AI and Machine Learning.
+    Cast a wide net to capture opportunities across different levels and companies.
+    Provide direct links to the job postings for easy access.
+  expected_output: >
+    A comprehensive list of 15-20 AI/ML job opportunities with titles, companies,
+    locations, and direct links to the job postings from all three job boards.
+  agent: job_searcher
+
+analyze_job_requirements:
+  description: >
+    Analyze the job postings from the search results.
+    Extract key information including: required skills, experience level,
+    job type (remote/on-site), company size, and potential salary range.
+    Identify patterns and trends in what employers are looking for.
+  expected_output: >
+    A detailed analysis of 10-15 top job opportunities with extracted information
+    including required skills, experience level, job type, and key qualifications.
+  agent: job_analyzer
+
+generate_market_report:
+  description: >
+    Create a comprehensive market report based on the job search and analysis.
+    Include: overview of current AI/ML job market, in-demand skills,
+    experience level distribution, top companies hiring, salary trends,
+    and recommendations for job seekers.
+  expected_output: >
+    A well-structured markdown report with sections covering market overview,
+    top opportunities, required skills, experience distribution, hiring trends,
+    and actionable recommendations for job seekers in AI/ML field.
+  agent: report_curator
