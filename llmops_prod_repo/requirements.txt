@@ -1,0 +1,39 @@
+# ── Core agent framework ───────────────────────────────────────────────────────
+langchain
+langchain-openai
+langchain-core
+langchain-community
+langgraph
+openai
+
+# ── Memory / vector store ──────────────────────────────────────────────────────
+redis
+pinecone
+
+# ── Integrations ──────────────────────────────────────────────────────────────
+atlassian-python-api
+
+# ── API / server ──────────────────────────────────────────────────────────────
+fastapi
+uvicorn
+pydantic
+
+# ── Resilience ────────────────────────────────────────────────────────────────
+tenacity
+pybreaker
+
+# ── Observability: LangSmith tracing ──────────────────────────────────────────
+langsmith
+
+# ── Guardrails: PII redaction (Presidio) ──────────────────────────────────────
+presidio-analyzer
+presidio-anonymizer
+# spaCy English model required by Presidio (install separately):
+#   python -m spacy download en_core_web_lg
+
+# ── RAG evaluation: RAGAS ─────────────────────────────────────────────────────
+ragas
+datasets
+
+# ── LLM evaluation: DeepEval ──────────────────────────────────────────────────
+deepeval
