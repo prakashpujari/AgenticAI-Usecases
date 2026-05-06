@@ -1,0 +1,67 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+*.egg
+*.egg-info/
+dist/
+build/
+eggs/
+parts/
+var/
+sdist/
+develop-eggs/
+.installed.cfg
+lib/
+lib64/
+*.pyo
+
+# Virtual environments
+.venv/
+venv/
+ENV/
+env/
+.env
+
+# Environment variables
+.env
+.env.*
+*.env
+
+# Jupyter Notebooks
+.ipynb_checkpoints/
+*.ipynb
+
+# VS Code
+.vscode/
+
+# IDE
+.idea/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Logs
+*.log
+logs/
+
+# Coverage
+.coverage
+htmlcov/
+.pytest_cache/
+.mypy_cache/
+
+# LangSmith / LangChain traces
+langsmith_traces/
+
+# Pinecone / Redis credentials (if stored locally)
+secrets/
+credentials/
+
+# Dist / build artifacts
+*.whl
+*.tar.gz
