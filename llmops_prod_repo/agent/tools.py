@@ -11,15 +11,34 @@ from observability.metrics import increment, record_duration
 
 logger = get_logger("agent.tools")
 
-jira_url   = os.getenv("JIRA_URL")
-jira_user  = os.getenv("JIRA_USER")
-jira_token = os.getenv("JIRA_TOKEN")
+jira_url     = os.getenv("JIRA_URL")
+jira_user    = os.getenv("JIRA_USER")
+jira_token   = os.getenv("JIRA_TOKEN")
+jira_project = os.getenv("JIRA_PROJECT", "MC")
 
 if jira_url and jira_user and jira_token:
     jira = Jira(url=jira_url, username=jira_user, password=jira_token)
 else:
     jira = None
     logger.warning("Jira credentials not set — running in mock mode")
+
+
+def check_jira_health() -> dict:
+    """Validate that Jira URL, username, and token are configured and the connection is reachable."""
+    missing = [name for name, val in [
+        ("JIRA_URL", jira_url),
+        ("JIRA_USER", jira_user),
+        ("JIRA_TOKEN", jira_token),
+    ] if not val]
+
+    if missing:
+        return {"healthy": False, "reason": f"Missing credentials: {', '.join(missing)}"}
+
+    try:
+        jira.myself()
+        return {"healthy": True, "url": jira_url, "user": jira_user}
+    except Exception as exc:
+        return {"healthy": False, "reason": str(exc)}
 
 
 @retry(
@@ -31,7 +50,7 @@ else:
 def _jira_create(summary: str) -> dict:
     return jira_breaker.call(
         lambda: jira.create_issue(fields={
-            "project":     {"key": "TEST"},
+            "project":     {"key": jira_project},
             "summary":     summary,
             "description": "Created by AI agent",
             "issuetype":   {"name": "Task"},
