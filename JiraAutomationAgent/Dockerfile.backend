@@ -1,0 +1,60 @@
+# ─────────────────────────────────────────────────────────────────────────────
+# Stage 1: builder  — install Python deps in a clean layer
+# ─────────────────────────────────────────────────────────────────────────────
+FROM python:3.11-slim AS builder
+
+WORKDIR /build
+
+# Install build tools needed for some Python packages (e.g. numpy, spacy)
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    build-essential \
+    curl \
+    && rm -rf /var/lib/apt/lists/*
+
+COPY backend/requirements-prod.txt .
+RUN pip install --upgrade pip \
+ && pip install --no-cache-dir --prefix=/install -r requirements-prod.txt
+
+# Download the spaCy model into the install prefix
+RUN PYTHONPATH=/install/lib/python3.11/site-packages \
+    python -m spacy download en_core_web_lg --target /install/lib/python3.11/site-packages
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Stage 2: runtime — minimal image with only what's needed to run
+# ─────────────────────────────────────────────────────────────────────────────
+FROM python:3.11-slim AS runtime
+
+# Non-root user for security
+RUN groupadd --gid 1001 appgroup \
+ && useradd  --uid 1001 --gid appgroup --shell /bin/false --create-home appuser
+
+WORKDIR /app
+
+# Copy installed packages from builder stage
+COPY --from=builder /install /usr/local
+
+# Copy application source
+COPY backend/ ./backend/
+
+# Ensure Python can find the backend package
+ENV PYTHONPATH=/app
+ENV PYTHONDONTWRITEBYTECODE=1
+ENV PYTHONUNBUFFERED=1
+
+# Production defaults (override via docker-compose env or K8s secrets)
+ENV ENVIRONMENT=production
+ENV GUNICORN_BIND=0.0.0.0:8000
+ENV GUNICORN_WORKERS=4
+ENV GUNICORN_TIMEOUT=180
+
+# Switch to non-root user
+USER appuser
+
+EXPOSE 8000
+
+# Health check so orchestrators know when the container is ready
+HEALTHCHECK --interval=30s --timeout=10s --start-period=20s --retries=3 \
+  CMD curl -f http://localhost:8000/health || exit 1
+
+CMD ["gunicorn", "backend.main:app", "-c", "backend/gunicorn.conf.py"]

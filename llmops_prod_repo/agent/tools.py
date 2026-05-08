@@ -1,5 +1,6 @@
 import os
 import time
+import requests
 from atlassian import Jira
 from tenacity import retry, stop_after_attempt, wait_exponential, retry_if_exception_type
 import pybreaker
@@ -65,9 +66,22 @@ def _jira_create(summary: str) -> dict:
     reraise=True,
 )
 def _jira_fetch() -> list[str]:
-    result = jira_breaker.call(
-        lambda: jira.jql("project = TEST ORDER BY created DESC", limit=5)
-    )
+    def _do_fetch():
+        resp = requests.get(
+            f"{jira_url}/rest/api/3/search/jql",
+            auth=(jira_user, jira_token),
+            params={
+                "jql": f"project = {jira_project} ORDER BY created DESC",
+                "maxResults": 5,
+                "fields": "key,summary",
+            },
+            headers={"Accept": "application/json"},
+            timeout=15,
+        )
+        resp.raise_for_status()
+        return resp.json()
+
+    result = jira_breaker.call(_do_fetch)
     return [
         f"{i['key']}: {i['fields']['summary']}"
         for i in result.get("issues", [])
@@ -82,7 +96,7 @@ def tool_agent(state):
 
     try:
         if "create" in plan:
-            check_permission(user, "create")
+            check_permission(user, "create", state.get("role"))
             if jira:
                 issue = _jira_create(state["input"])
                 result = f"Ticket {issue['key']} created"
@@ -90,7 +104,7 @@ def tool_agent(state):
                 result = "Ticket created (mock)"
             increment("tool.create.success")
         else:
-            check_permission(user, "read")
+            check_permission(user, "read", state.get("role"))
             if jira:
                 tickets = _jira_fetch()
                 result = f"Recent tickets: {', '.join(tickets)}"

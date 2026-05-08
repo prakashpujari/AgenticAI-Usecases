@@ -1,0 +1,70 @@
+# docker-compose.prod.yml — production stack
+# Builds and runs the optimised multi-stage images.
+#
+# Usage:
+#   docker compose -f docker-compose.prod.yml up -d --build
+#
+# Pre-requisites:
+#   1. Create .env.prod from .env.example with real secrets
+#   2. Set CORS_ORIGINS=https://your-domain.com in .env.prod
+#   3. Set ENVIRONMENT=production in .env.prod
+#
+# HTTPS: terminate TLS at a load balancer (AWS ALB, Cloudflare, Traefik) and
+# forward to port 80 of the frontend container.
+
+version: "3.9"
+
+services:
+
+  redis:
+    image: redis:7-alpine
+    restart: unless-stopped
+    command: redis-server --maxmemory 256mb --maxmemory-policy allkeys-lru
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  backend:
+    build:
+      context: .
+      dockerfile: Dockerfile.backend
+      target: runtime
+    restart: unless-stopped
+    env_file: .env.prod
+    environment:
+      ENVIRONMENT: production
+      REDIS_URL: redis://redis:6379
+    depends_on:
+      redis:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 30s
+    # Do NOT expose port 8000 to the host — only the frontend container
+    # (via the internal Docker network) should reach it.
+    expose:
+      - "8000"
+
+  frontend:
+    build:
+      context: .
+      dockerfile: Dockerfile.frontend
+      target: runtime
+      args:
+        VITE_API_URL: ""   # empty = same-origin (Nginx proxies /ai/* to backend)
+    restart: unless-stopped
+    ports:
+      - "80:80"
+    depends_on:
+      backend:
+        condition: service_healthy
+
+volumes:
+  redis_data:

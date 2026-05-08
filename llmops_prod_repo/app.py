@@ -1,3 +1,4 @@
+import os
 import time
 import uuid
 from contextlib import asynccontextmanager
@@ -113,6 +114,12 @@ async def run_agent_endpoint(request: AgentRequest):
         increment("api.run_agent.errors")
         logger.error("Unhandled agent error", exc_info=True)
         raise HTTPException(status_code=500, detail="Internal server error")
+
+
+# ── Config endpoint ────────────────────────────────────────────────────────────
+@app.get("/config")
+async def config():
+    return {"jira_url": os.getenv("JIRA_URL", "")}
 
 
 # ── Health check ───────────────────────────────────────────────────────────────
