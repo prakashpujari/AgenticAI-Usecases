@@ -39,6 +39,7 @@ from reportlab.lib.styles import ParagraphStyle, getSampleStyleSheet
 from reportlab.lib.units import inch
 from reportlab.platypus import (
     HRFlowable,
+    Image,
     PageBreak,
     Paragraph,
     SimpleDocTemplate,
@@ -52,6 +53,15 @@ logger = get_logger(__name__)
 # ─── Document metadata ─────────────────────────────────────────────────────────
 DOCUMENT_TITLE    = "Fundamentals of Cloud Computing"
 DOCUMENT_SUBTITLE = "A Comprehensive Technical Introduction"
+
+# ─── Author photo ─────────────────────────────────────────────────────────────
+# Place your headshot at assets/author.png (or .jpg) in the project root.
+# The pipeline will embed it on the cover page.  If the file is absent the
+# cover renders without the photo — no error is raised.
+_BASE = Path(__file__).parent.parent.parent  # project root
+AUTHOR_PHOTO_PATH: Path = _BASE / "assets" / "author.png"
+AUTHOR_NAME  = "Prakash Pujari"
+AUTHOR_LINKEDIN = "linkedin.com/in/prakashpujari1"
 
 # ─── Chapter content ───────────────────────────────────────────────────────────
 # Each chapter is a dict with two keys:
@@ -426,6 +436,42 @@ def create_sample_pdf(output_path: Path | str) -> Path:
     story.append(Paragraph(DOCUMENT_SUBTITLE, subtitle_style))
     story.append(HRFlowable(width="80%", thickness=2, color=colors.HexColor("#1a237e")))
     story.append(Spacer(1, 0.5 * inch))
+
+    # ── Author block ───────────────────────────────────────────────────────────
+    author_name_style = ParagraphStyle(
+        "AuthorName",
+        parent=styles["Normal"],
+        fontSize=13,
+        leading=18,
+        textColor=colors.HexColor("#1a237e"),
+        alignment=TA_CENTER,
+        spaceAfter=4,
+    )
+    author_meta_style = ParagraphStyle(
+        "AuthorMeta",
+        parent=styles["Normal"],
+        fontSize=10,
+        leading=14,
+        textColor=colors.HexColor("#0077b5"),  # LinkedIn blue
+        alignment=TA_CENTER,
+        spaceAfter=16,
+    )
+
+    # Embed the author photo if it exists on disk
+    if AUTHOR_PHOTO_PATH.exists():
+        try:
+            photo = Image(str(AUTHOR_PHOTO_PATH), width=1.2 * inch, height=1.2 * inch)
+            photo.hAlign = "CENTER"
+            story.append(photo)
+            story.append(Spacer(1, 0.15 * inch))
+        except Exception:  # noqa: BLE001 — never let a missing photo crash the pipeline
+            pass
+
+    story.append(Paragraph(f"<b>{AUTHOR_NAME}</b>", author_name_style))
+    story.append(Paragraph(AUTHOR_LINKEDIN, author_meta_style))
+    story.append(HRFlowable(width="50%", thickness=0.5, color=colors.HexColor("#bbdefb")))
+    story.append(Spacer(1, 0.2 * inch))
+
     story.append(
         Paragraph(
             "This document is intended for educational purposes and serves as the "
