@@ -1,0 +1,33 @@
+# ── Core LangChain ────────────────────────────────────────────────────────────
+langchain>=0.3.0
+langchain-openai>=0.2.0
+langchain-community>=0.3.0
+langchain-text-splitters>=0.3.0
+langchain-core>=0.3.0
+
+# ── OpenAI SDK (pinned to v1 to align with langchain-openai) ─────────────────
+openai>=1.50.0
+
+# ── Vector store ─────────────────────────────────────────────────────────────
+faiss-cpu>=1.8.0
+
+# ── PDF extraction ────────────────────────────────────────────────────────────
+pypdf>=4.0.0
+
+# ── Sample PDF creation ───────────────────────────────────────────────────────
+reportlab>=4.0.0
+
+# ── Markdown → HTML ───────────────────────────────────────────────────────────
+markdown>=3.6.0
+
+# ── HTML → PDF (pure Python, cross-platform) ─────────────────────────────────
+xhtml2pdf>=0.2.16
+
+# ── Tokenisation helper used by LangChain splitters ──────────────────────────
+tiktoken>=0.7.0
+
+# ── LangSmith tracing ─────────────────────────────────────────────────────────
+langsmith>=0.1.0
+
+# ── Environment variables ─────────────────────────────────────────────────────
+python-dotenv>=1.0.0
