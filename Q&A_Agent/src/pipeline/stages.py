@@ -60,6 +60,7 @@ from langsmith import traceable
 # The original src/*.py files are kept as backward-compat stubs.
 from src.ingestion.pdf_generator  import create_sample_pdf
 from src.ingestion.pdf_extractor  import extract_and_clean
+from src.ingestion.document_loader import load_document
 from src.retrieval.embeddings_store import (
     split_text,
     build_vector_store,
@@ -103,27 +104,29 @@ def stage_generate_pdf(
 # ─── Stage 2: Extract and clean text ──────────────────────────────────────────
 @traceable(name="stage_extract_text", run_type="tool", tags=["ingestion"])
 def stage_extract_text(
-    pdf_path: Path | str,
+    input_source: Path | str,
     metrics: PipelineMetrics,
 ) -> str:
     """
-    Extracts and cleans text from the source PDF.
+    Loads and cleans text from any supported document source.
+
+    Supported formats: PDF, TXT, MD, RST, CSV, DOCX, XLSX, or any HTTP(S) URL.
 
     Metrics recorded:
-      • char_count — character count of the cleaned text
-      • pdf_path   — source file path
+      • char_count    — character count of the cleaned text
+      • input_source  — source file path or URL
 
     Args:
-        pdf_path: Path to the PDF produced by stage_generate_pdf.
-        metrics:  Active pipeline metrics tracker.
+        input_source: Local file path (any supported format) or http(s):// URL.
+        metrics:      Active pipeline metrics tracker.
 
     Returns:
         Cleaned text string.
     """
     with metrics.stage("extract_text") as s:
-        text = extract_and_clean(pdf_path)
-        s.add("char_count", len(text))
-        s.add("pdf_path",   str(pdf_path))
+        text = load_document(input_source)
+        s.add("char_count",   len(text))
+        s.add("input_source", str(input_source))
     return text
 
 
@@ -192,6 +195,7 @@ def stage_build_vector_store(
 def stage_generate_questions(
     vector_store: FAISS,
     metrics: PipelineMetrics,
+    num_questions: int | None = None,
 ) -> list[QuestionDict]:
     """
     Queries the vector store and calls the LLM to produce MCQ questions.
@@ -202,17 +206,19 @@ def stage_generate_questions(
       • temperature    — sampling temperature (for reproducibility audit)
 
     Args:
-        vector_store: Populated FAISS instance from stage_build_vector_store.
-        metrics:      Active pipeline metrics tracker.
+        vector_store:  Populated FAISS instance from stage_build_vector_store.
+        metrics:       Active pipeline metrics tracker.
+        num_questions: Optional override for question count.
 
     Returns:
         List of validated QuestionDict objects.
     """
     with metrics.stage("generate_questions") as s:
-        questions = generate_questions(vector_store)
+        questions = generate_questions(vector_store, num_questions=num_questions)
         s.add("question_count", len(questions))
         s.add("llm_model",      config.OPENAI_MODEL)
         s.add("temperature",    config.TEMPERATURE)
+        s.add("requested_questions", num_questions or config.NUM_QUESTIONS)
     return questions
 
 

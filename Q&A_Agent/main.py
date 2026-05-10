@@ -42,6 +42,8 @@ Exit codes
 """
 
 import sys
+import argparse
+from pathlib import Path
 
 # ── Observability must be initialised FIRST ───────────────────────────────────
 # setup_logging() configures the root Python logger before any library code
@@ -70,6 +72,36 @@ logger = get_logger("qa_agent.main")
 
 # ── Pipeline orchestrator ─────────────────────────────────────────────────────
 
+def _parse_args() -> argparse.Namespace:
+    """
+    Parse command-line arguments.
+
+    --input / -i  Path to any supported document OR an http(s):// URL.
+                  Supported formats: PDF, TXT, MD, RST, CSV, DOCX, XLSX.
+                  When omitted the pipeline generates (or reuses) the built-in
+                  Cloud Computing sample PDF.
+    """
+    parser = argparse.ArgumentParser(
+        prog="qa_agent",
+        description=(
+            "Q&A Agent — generate MCQ questions from any document.\n"
+            "Supported input: PDF, TXT, MD, DOCX, XLSX, CSV, or any http(s):// URL."
+        ),
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
+    parser.add_argument(
+        "-i", "--input",
+        metavar="PATH_OR_URL",
+        default=None,
+        help=(
+            "Path to an input document (PDF / TXT / MD / DOCX / XLSX / CSV) "
+            "or an http(s):// URL.  When omitted, a sample Cloud Computing PDF "
+            "is generated automatically."
+        ),
+    )
+    return parser.parse_args()
+
+
 def main() -> None:
     """
     Runs the complete Q&A generation pipeline end-to-end.
@@ -87,6 +119,20 @@ def main() -> None:
         1 – configuration / environment error
         2 – runtime / API error
     """
+    # ── Parse CLI arguments ────────────────────────────────────────────────────
+    args = _parse_args()
+    input_source: Path | str | None = None
+    if args.input:
+        raw = args.input.strip()
+        import re as _re
+        if _re.match(r"^https?://", raw, _re.IGNORECASE):
+            input_source = raw          # URL — keep as str
+        else:
+            input_source = Path(raw)    # Local path
+            if not input_source.exists():
+                logger.error("Input file not found: %s", input_source.resolve())
+                sys.exit(1)
+
     # ── Pre-flight: validate configuration ────────────────────────────────────
     if not config.OPENAI_API_KEY:
         logger.error(
@@ -145,37 +191,59 @@ def main() -> None:
         _trace_ctx = contextlib.nullcontext()
 
     with _trace_ctx:
-        _run_pipeline(metrics)
+        _run_pipeline(metrics, input_source=input_source)
 
 
-def _run_pipeline(metrics: PipelineMetrics) -> None:
+def _run_pipeline(metrics: PipelineMetrics, *, input_source: "Path | str | None" = None) -> None:
     """
     Inner pipeline runner — all 7 stage calls, error handling, and final reporting.
+
+    Args:
+        metrics:      Active PipelineMetrics instance.
+        input_source: Optional local file path or URL supplied via --input.
+                      When None the pipeline generates (or reuses) the built-in
+                      sample PDF.
 
     Separated from main() so it can be cleanly wrapped in the LangSmith parent
     trace context manager without nesting the entire main() body inside a try/with.
     """
     try:
         # ── Stage 1: Generate sample source PDF ───────────────────────────────
-        # Skips creation if the PDF already exists on disk (idempotent).
-        if config.SAMPLE_PDF_PATH.exists():
+        # Skipped entirely when the user supplies their own document via --input.
+        if input_source is not None:
+            # User provided a custom document — skip PDF generation
+            resolved_source = input_source
+            source_label = (
+                Path(input_source).name
+                if not str(input_source).startswith("http")
+                else str(input_source)
+            )
+            logger.info(
+                "[1/7] Custom input document provided — skipping sample PDF generation: %s",
+                resolved_source,
+            )
+            with metrics.stage("generate_sample_pdf") as s:
+                s.add("skipped",       True)
+                s.add("input_source",  str(resolved_source))
+        elif config.SAMPLE_PDF_PATH.exists():
+            resolved_source = config.SAMPLE_PDF_PATH
+            source_label = config.SAMPLE_PDF_PATH.name
             logger.info(
                 "[1/7] Sample PDF already exists, skipping: %s",
                 config.SAMPLE_PDF_PATH,
             )
-            pdf_path = config.SAMPLE_PDF_PATH
-            # Record a synthetic (instant) stage so the metrics report is complete
             with metrics.stage("generate_sample_pdf") as s:
                 s.add("skipped",  True)
-                s.add("pdf_path", str(pdf_path))
+                s.add("pdf_path", str(resolved_source))
         else:
             logger.info("[1/7] Generating sample PDF …")
-            pdf_path = stage_generate_pdf(config.SAMPLE_PDF_PATH, metrics)
-            logger.info("      ✓ PDF created: %s", pdf_path)
+            resolved_source = stage_generate_pdf(config.SAMPLE_PDF_PATH, metrics)
+            source_label = config.SAMPLE_PDF_PATH.name
+            logger.info("      ✓ PDF created: %s", resolved_source)
 
         # ── Stage 2: Extract and clean text ───────────────────────────────────
-        logger.info("[2/7] Extracting and cleaning text from PDF …")
-        clean_text = stage_extract_text(pdf_path, metrics)
+        logger.info("[2/7] Extracting and cleaning text from: %s …", resolved_source)
+        clean_text = stage_extract_text(resolved_source, metrics)
         logger.info("      ✓ Extracted %d characters", len(clean_text))
 
         # ── Stage 3: Split text into chunks ───────────────────────────────────
@@ -207,7 +275,7 @@ def _run_pipeline(metrics: PipelineMetrics) -> None:
         logger.info("[6/7] Formatting questions as Markdown …")
         stage_format_markdown(
             questions,
-            source_name=config.SAMPLE_PDF_PATH.name,
+            source_name=source_label,
             output_path=config.OUTPUT_MARKDOWN_PATH,
             metrics=metrics,
         )
