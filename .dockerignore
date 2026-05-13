@@ -1,0 +1,11 @@
+# Exclude large/irrelevant directories from Docker build context
+Q&A_Agent/frontend/node_modules
+Q&A_Agent/frontend/dist
+Q&A_Agent/data/faiss_index
+Q&A_Agent/logs
+Q&A_Agent/output
+Q&A_Agent/api/uploads
+Q&A_Agent/.vercel
+**/__pycache__
+**/*.pyc
+**/.git
