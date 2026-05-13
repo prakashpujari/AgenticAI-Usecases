@@ -22,8 +22,9 @@ env/
 ENV/
 
 # ── Generated outputs ─────────────────────────────────────────────────────────
-output/
-logs/
+# Use /output to anchor to the repo root only — avoids ignoring src/output/
+/output/
+/logs/
 
 # ── FAISS index (large binary, regenerated on each run) ──────────────────────
 data/faiss_index/
