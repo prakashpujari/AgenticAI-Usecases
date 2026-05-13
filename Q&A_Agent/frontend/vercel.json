@@ -2,11 +2,11 @@
   "rewrites": [
     {
       "source": "/api/:path*",
-      "destination": "https://qa-agent-api.onrender.com/api/:path*"
+      "destination": "https://qa-agent-api-p4qd.onrender.com/api/:path*"
     },
     {
       "source": "/health",
-      "destination": "https://qa-agent-api.onrender.com/health"
+      "destination": "https://qa-agent-api-p4qd.onrender.com/health"
     }
   ]
 }
