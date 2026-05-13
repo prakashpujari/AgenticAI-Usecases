@@ -1,0 +1,21 @@
+services:
+  - type: web
+    name: qa-agent-api
+    runtime: python
+    region: oregon
+    plan: free
+    buildCommand: pip install -r requirements.txt
+    startCommand: uvicorn api.server:app --host 0.0.0.0 --port $PORT
+    envVars:
+      - key: OPENAI_API_KEY
+        sync: false          # you set this manually in Render dashboard
+      - key: OPENAI_MODEL
+        value: gpt-4o
+      - key: OPENAI_EMBEDDING_MODEL
+        value: text-embedding-3-small
+      - key: NUM_QUESTIONS
+        value: "10"
+      - key: LOG_TO_FILE
+        value: "false"       # Render captures stdout; no need for file logs
+      - key: PYTHON_VERSION
+        value: "3.11.0"
