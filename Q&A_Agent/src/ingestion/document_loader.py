@@ -156,13 +156,21 @@ def _youtube_video_id(url: str) -> str | None:
     if "youtu.be" in host:
         vid = parsed.path.strip("/")
         return vid or None
-    if "youtube.com" in host:
+    if "youtube.com" in host or "youtube-nocookie.com" in host:
         if parsed.path == "/watch":
             return parse_qs(parsed.query).get("v", [None])[0]
         if parsed.path.startswith("/shorts/"):
             return parsed.path.split("/shorts/")[-1].split("/")[0]
+        if parsed.path.startswith("/live/"):
+            return parsed.path.split("/live/")[-1].split("/")[0]
         if parsed.path.startswith("/embed/"):
             return parsed.path.split("/embed/")[-1].split("/")[0]
+
+    # Conservative fallback for less common URL forms (e.g. /v/<id>, attribution links).
+    match = re.search(r"(?:v=|/v/|vi=|/vi/)([A-Za-z0-9_-]{11})", url)
+    if match:
+        return match.group(1)
+
     return None
 
 
@@ -180,25 +188,31 @@ def _load_youtube_transcript(url: str) -> str:
             "  pip install youtube-transcript-api"
         ) from exc
 
-    # youtube-transcript-api has different public APIs across versions:
-    # - older: YouTubeTranscriptApi.get_transcript(video_id)
-    # - newer: YouTubeTranscriptApi().fetch(video_id)
+    # youtube-transcript-api APIs vary across versions. Prefer modern APIs and
+    # keep a conservative compatibility fallback.
     transcript_items: list = []
     api = YouTubeTranscriptApi()
 
     try:
-        if hasattr(api, "fetch"):
-            fetched = api.fetch(video_id)
-            # Newer versions return snippet objects with a .text attribute.
+        fetch_fn = getattr(api, "fetch", None)
+        if callable(fetch_fn):
+            fetched = fetch_fn(video_id)
+            # Newer versions return iterable snippet objects with a .text attribute.
             transcript_items = list(fetched)
-        elif hasattr(YouTubeTranscriptApi, "get_transcript"):
-            transcript_items = list(YouTubeTranscriptApi.get_transcript(video_id))
-        elif hasattr(api, "get_transcript"):
-            transcript_items = list(api.get_transcript(video_id))
         else:
-            raise RuntimeError(
-                "Unsupported youtube-transcript-api version: no compatible transcript method found."
-            )
+            list_fn = getattr(api, "list", None)
+            if not callable(list_fn):
+                raise RuntimeError(
+                    "Unsupported youtube-transcript-api version: no compatible transcript method found."
+                )
+
+            transcript_list = list_fn(video_id)
+            # Prefer English first, then let the API choose a generated/default transcript.
+            try:
+                transcript = transcript_list.find_transcript(["en", "en-US", "en-GB"])
+            except Exception:  # noqa: BLE001
+                transcript = transcript_list.find_generated_transcript(["en", "en-US", "en-GB"])
+            transcript_items = list(transcript.fetch())
     except Exception as exc:  # noqa: BLE001
         # Keep this robust across library versions by matching error class names.
         err_name = type(exc).__name__
