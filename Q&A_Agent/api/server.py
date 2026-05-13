@@ -40,17 +40,11 @@ from slowapi.errors import RateLimitExceeded
 
 import config
 from observability import setup_logging, PipelineMetrics, setup_langsmith
-from src.pipeline.stages import (
-    stage_generate_pdf,
-    stage_extract_text,
-    stage_split_text,
-    stage_build_vector_store,
-    stage_generate_questions,
-    stage_format_markdown,
-    stage_convert_to_pdf,
-)
-from src.ingestion.document_loader import load_document
 from observability.logger import get_logger
+
+# Heavy pipeline imports are deferred to inside _run_pipeline_job() so
+# the server starts quickly on memory-constrained hosts (e.g. Render free tier).
+# faiss-cpu and the full langchain stack are only loaded when the first job runs.
 
 # ── Setup logging and observability ────────────────────────────────────────────
 setup_logging()
@@ -73,7 +67,11 @@ app = FastAPI(
 # ── CORS Configuration ────────────────────────────────────────────────────────
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:3000", "http://localhost:5173"],  # React dev servers
+    allow_origins=[
+        "http://localhost:3000", "http://localhost:5173",  # local dev
+        "https://frontend-six-red-29.vercel.app",          # Vercel production
+        "https://*.vercel.app",                            # all Vercel preview URLs
+    ],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -209,6 +207,18 @@ def _execute_pipeline(job: dict[str, Any]) -> None:
     _update_job_status(pipeline_id, "processing")
 
     try:
+        # Lazy-load heavy pipeline modules (faiss, langchain, openai) here
+        # so the server process itself stays lightweight at startup.
+        from src.pipeline.stages import (
+            stage_extract_text,
+            stage_split_text,
+            stage_build_vector_store,
+            stage_generate_questions,
+            stage_format_markdown,
+            stage_convert_to_pdf,
+        )
+        from src.ingestion.document_loader import load_document  # noqa: F401
+
         # Initialize metrics tracker
         metrics = PipelineMetrics()
         metrics.pipeline_id = pipeline_id  # Use the API-assigned ID
