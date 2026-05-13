@@ -35,7 +35,8 @@ openpyxl>=3.1.0      # .xlsx support (Excel spreadsheets)
 # ── FastAPI gateway and rate limiting ──────────────────────────────────────────
 fastapi>=0.104.0
 uvicorn[standard]>=0.24.0
-slowapi>=0.1.9        # Rate limiting middleware
+python-multipart>=0.0.9   # Required by FastAPI for File/Form upload routes
+slowapi>=0.1.9             # Rate limiting middleware
 
 # ── URL/media ingestion extras ────────────────────────────────────────────────
 youtube-transcript-api>=0.6.2
