@@ -136,9 +136,24 @@ CREATE TABLE IF NOT EXISTS qa_stage_timings (
     created_at      TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 
+CREATE TABLE IF NOT EXISTS qa_reviews (
+    review_id       TEXT        PRIMARY KEY,
+    rating          INTEGER     NOT NULL CHECK(rating BETWEEN 1 AND 5),
+    review_text     TEXT,
+    use_case        TEXT,
+    output_mode     TEXT,
+    job_id          TEXT,
+    identity        TEXT,
+    created_at      TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    sentiment       TEXT,
+    sentiment_score REAL
+);
+
 CREATE INDEX IF NOT EXISTS idx_qa_jobs_status     ON qa_jobs(status);
 CREATE INDEX IF NOT EXISTS idx_qa_jobs_created_at ON qa_jobs(created_at DESC);
 CREATE INDEX IF NOT EXISTS idx_stage_pipeline_id  ON qa_stage_timings(pipeline_id);
+CREATE INDEX IF NOT EXISTS idx_reviews_created_at ON qa_reviews(created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_reviews_rating     ON qa_reviews(rating);
 """
 
 
@@ -199,6 +214,22 @@ def _init_sqlite() -> None:
                 created_at  TEXT NOT NULL
             )
         """)
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS qa_reviews (
+                review_id       TEXT PRIMARY KEY,
+                rating          INTEGER NOT NULL,
+                review_text     TEXT,
+                use_case        TEXT,
+                output_mode     TEXT,
+                job_id          TEXT,
+                identity        TEXT,
+                created_at      TEXT NOT NULL,
+                sentiment       TEXT,
+                sentiment_score REAL
+            )
+        """)
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_reviews_created_at ON qa_reviews(created_at DESC)")
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_reviews_rating ON qa_reviews(rating)")
         conn.commit()
     logger.info("SQLite schema ready: %s", _SQLITE_PATH)
 
@@ -407,10 +438,28 @@ def get_dashboard_stats() -> dict:
             FROM qa_jobs
         """).fetchone()
         stats = dict(row)
-        stats["avg_duration_ms"] = 0
-        stats["by_mode"] = {}
+
+        # Compute avg_duration_ms in Python (same approach as PostgreSQL path)
+        completed_rows = conn.execute(
+            "SELECT created_at, updated_at FROM qa_jobs WHERE status='completed'"
+        ).fetchall()
+        durations = [_duration_ms(str(r[0]), str(r[1])) for r in completed_rows]
+        valid = [d for d in durations if d is not None and d >= 0]
+        stats["avg_duration_ms"] = round(sum(valid) / len(valid)) if valid else 0
+
+        by_mode_rows = conn.execute(
+            "SELECT output_mode, COUNT(*) FROM qa_jobs GROUP BY output_mode"
+        ).fetchall()
+        stats["by_mode"] = {r[0]: r[1] for r in by_mode_rows}
+
+        stage_rows = conn.execute(
+            "SELECT stage_name, AVG(duration_ms), COUNT(*) FROM qa_stage_timings GROUP BY stage_name"
+        ).fetchall()
+        stats["stage_avg_ms"] = {
+            r[0]: {"avg_ms": round(r[1], 0), "runs": r[2]} for r in stage_rows
+        }
+
         stats["hourly"] = []
-        stats["stage_avg_ms"] = {}
         return stats
 
 
@@ -475,3 +524,137 @@ def get_recent_jobs(limit: int = 50) -> list[dict]:
             row["reason"] = ""
 
     return rows_raw
+
+
+# ── Reviews ───────────────────────────────────────────────────────────────────
+
+def save_review(review: dict[str, Any]) -> None:
+    """Persist a user review/rating."""
+    now = datetime.now(timezone.utc).isoformat()
+    rid = review["review_id"]
+
+    if _using_postgres:
+        sql = """
+            INSERT INTO qa_reviews
+              (review_id, rating, review_text, use_case, output_mode,
+               job_id, identity, created_at)
+            VALUES (%s,%s,%s,%s,%s,%s,%s,%s)
+            ON CONFLICT (review_id) DO NOTHING
+        """
+        try:
+            with _pg_conn() as conn:
+                with conn.cursor() as cur:
+                    cur.execute(sql, (
+                        rid,
+                        int(review["rating"]),
+                        review.get("review_text"),
+                        review.get("use_case"),
+                        review.get("output_mode"),
+                        review.get("job_id"),
+                        review.get("identity"),
+                        now,
+                    ))
+            return
+        except Exception as exc:
+            logger.warning("PG save_review failed, using SQLite: %s", exc)
+
+    with _sqlite_lock, sqlite3.connect(str(_SQLITE_PATH)) as conn:
+        conn.execute("""
+            INSERT OR IGNORE INTO qa_reviews
+              (review_id, rating, review_text, use_case, output_mode,
+               job_id, identity, created_at)
+            VALUES (?,?,?,?,?,?,?,?)
+        """, (
+            rid,
+            int(review["rating"]),
+            review.get("review_text"),
+            review.get("use_case"),
+            review.get("output_mode"),
+            review.get("job_id"),
+            review.get("identity"),
+            now,
+        ))
+        conn.commit()
+
+
+def get_reviews(limit: int = 20) -> list[dict]:
+    """Return recent reviews ordered newest first."""
+    if _using_postgres:
+        try:
+            with _pg_conn() as conn:
+                with conn.cursor() as cur:
+                    cur.execute("""
+                        SELECT review_id, rating, review_text, use_case,
+                               output_mode, job_id, created_at, sentiment, sentiment_score
+                        FROM qa_reviews ORDER BY created_at DESC LIMIT %s
+                    """, (limit,))
+                    cols = [d[0] for d in cur.description]
+                    rows = [dict(zip(cols, r)) for r in cur.fetchall()]
+                    for r in rows:
+                        if hasattr(r.get("created_at"), "isoformat"):
+                            r["created_at"] = r["created_at"].isoformat()
+                    return rows
+        except Exception as exc:
+            logger.warning("PG get_reviews failed: %s", exc)
+
+    with _sqlite_lock, sqlite3.connect(str(_SQLITE_PATH)) as conn:
+        conn.row_factory = sqlite3.Row
+        rows = conn.execute("""
+            SELECT review_id, rating, review_text, use_case,
+                   output_mode, job_id, created_at, sentiment, sentiment_score
+            FROM qa_reviews ORDER BY created_at DESC LIMIT ?
+        """, (limit,)).fetchall()
+        return [dict(r) for r in rows]
+
+
+def get_review_stats() -> dict:
+    """Return aggregate rating statistics."""
+    if _using_postgres:
+        try:
+            with _pg_conn() as conn:
+                with conn.cursor() as cur:
+                    cur.execute("""
+                        SELECT
+                            COUNT(*)          AS total,
+                            ROUND(AVG(rating)::numeric, 2) AS avg_rating,
+                            COUNT(*) FILTER (WHERE rating=5) AS five,
+                            COUNT(*) FILTER (WHERE rating=4) AS four,
+                            COUNT(*) FILTER (WHERE rating=3) AS three,
+                            COUNT(*) FILTER (WHERE rating=2) AS two,
+                            COUNT(*) FILTER (WHERE rating=1) AS one
+                        FROM qa_reviews
+                    """)
+                    row = cur.fetchone()
+                    cols = [d[0] for d in cur.description]
+                    r = dict(zip(cols, row))
+                    return {
+                        "total":        int(r["total"] or 0),
+                        "avg_rating":   float(r["avg_rating"] or 0),
+                        "distribution": {5: int(r["five"] or 0), 4: int(r["four"] or 0),
+                                         3: int(r["three"] or 0), 2: int(r["two"] or 0),
+                                         1: int(r["one"] or 0)},
+                    }
+        except Exception as exc:
+            logger.warning("PG get_review_stats failed: %s", exc)
+
+    with _sqlite_lock, sqlite3.connect(str(_SQLITE_PATH)) as conn:
+        conn.row_factory = sqlite3.Row
+        row = conn.execute("""
+            SELECT
+                COUNT(*) AS total,
+                AVG(CAST(rating AS REAL)) AS avg_rating,
+                SUM(CASE WHEN rating=5 THEN 1 ELSE 0 END) AS five,
+                SUM(CASE WHEN rating=4 THEN 1 ELSE 0 END) AS four,
+                SUM(CASE WHEN rating=3 THEN 1 ELSE 0 END) AS three,
+                SUM(CASE WHEN rating=2 THEN 1 ELSE 0 END) AS two,
+                SUM(CASE WHEN rating=1 THEN 1 ELSE 0 END) AS one
+            FROM qa_reviews
+        """).fetchone()
+        r = dict(row)
+        return {
+            "total":        int(r["total"] or 0),
+            "avg_rating":   round(float(r["avg_rating"] or 0), 2),
+            "distribution": {5: int(r["five"] or 0), 4: int(r["four"] or 0),
+                             3: int(r["three"] or 0), 2: int(r["two"] or 0),
+                             1: int(r["one"] or 0)},
+        }

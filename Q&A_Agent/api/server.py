@@ -53,6 +53,7 @@ from api.middleware.rate_limit import (
 from api.database import (
     init_db, save_job, get_job, update_job,
     save_stage_timing, get_dashboard_stats, get_recent_jobs,
+    save_review, get_reviews, get_review_stats,
 )
 from api.cache import make_cache_key, get_cached, set_cached
 
@@ -807,6 +808,52 @@ async def dashboard_jobs(request: Request, limit: int = 50):
             elif v is None:
                 j[k] = None
     return {"jobs": jobs, "count": len(jobs)}
+
+
+class ReviewRequest(BaseModel):
+    rating:      int           # 1–5
+    review_text: str  = ""
+    use_case:    str  = ""     # e.g. "education", "interview prep"
+    output_mode: str  = ""
+    job_id:      str  = ""
+
+
+@app.post("/api/reviews", tags=["Reviews"])
+@limiter.limit("5/minute")
+async def submit_review(request: Request, body: ReviewRequest):
+    """
+    Submit a star rating (1–5) and optional free-text review.
+
+    Stored verbatim in qa_reviews for later sentiment-analysis / ML use.
+    The identity field is the HMAC-hashed device fingerprint (anonymised).
+    """
+    if not (1 <= body.rating <= 5):
+        api_error(400, E.INVALID_PARAM, "rating must be 1–5")
+
+    identity   = extract_identity(request)
+    request_id = getattr(request.state, "request_id", "unknown")
+
+    review = {
+        "review_id":   str(uuid.uuid4()),
+        "rating":      body.rating,
+        "review_text": body.review_text.strip()[:2000],  # cap to 2 KB
+        "use_case":    body.use_case.strip()[:100],
+        "output_mode": body.output_mode.strip()[:20],
+        "job_id":      body.job_id.strip()[:20],
+        "identity":    identity,
+    }
+    save_review(review)
+    logger.info("Review saved: rating=%d request_id=%s", body.rating, request_id)
+    return {"status": "ok", "review_id": review["review_id"]}
+
+
+@app.get("/api/dashboard/reviews", tags=["Reviews"])
+@limiter.limit("60/minute")
+async def dashboard_reviews(request: Request, limit: int = 20):
+    """Recent reviews + aggregate stats for the dashboard."""
+    reviews = get_reviews(min(limit, 100))
+    stats   = get_review_stats()
+    return {"reviews": reviews, "stats": stats}
 
 
 @app.get("/api/dashboard/cache-status", tags=["Dashboard"])

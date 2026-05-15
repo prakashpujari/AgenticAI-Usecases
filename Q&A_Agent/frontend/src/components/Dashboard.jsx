@@ -41,24 +41,189 @@ function CacheBadge({ cached }) {
     : <span className="px-2 py-0.5 rounded text-xs font-medium bg-gray-100 text-gray-500">fresh</span>
 }
 
+function StarRating({ value, onChange, readonly = false }) {
+  const [hover, setHover] = useState(0)
+  return (
+    <div className="flex gap-1">
+      {[1, 2, 3, 4, 5].map((star) => (
+        <button
+          key={star}
+          type="button"
+          disabled={readonly}
+          onClick={() => !readonly && onChange && onChange(star)}
+          onMouseEnter={() => !readonly && setHover(star)}
+          onMouseLeave={() => !readonly && setHover(0)}
+          className={`text-2xl transition-transform ${readonly ? 'cursor-default' : 'cursor-pointer hover:scale-110'}`}
+          aria-label={`${star} star`}
+        >
+          <span className={(hover || value) >= star ? 'text-yellow-400' : 'text-gray-300'}>★</span>
+        </button>
+      ))}
+    </div>
+  )
+}
+
+function RatingBar({ star, count, total }) {
+  const pct = total > 0 ? Math.round((count / total) * 100) : 0
+  return (
+    <div className="flex items-center gap-2 text-xs">
+      <span className="w-4 text-right text-gray-600 font-medium">{star}</span>
+      <span className="text-yellow-400 text-sm">★</span>
+      <div className="flex-1 bg-gray-100 rounded-full h-2">
+        <div className="h-2 rounded-full bg-yellow-400 transition-all" style={{ width: `${pct}%` }} />
+      </div>
+      <span className="w-8 text-right text-gray-500">{count}</span>
+    </div>
+  )
+}
+
+const USE_CASES = [
+  '', 'Education / Study', 'Interview Prep', 'Quiz Creation',
+  'Research', 'Corporate Training', 'Content Creation', 'Other',
+]
+
+function ReviewForm({ onSubmitted }) {
+  const [rating,     setRating]     = useState(0)
+  const [text,       setText]       = useState('')
+  const [useCase,    setUseCase]    = useState('')
+  const [submitting, setSubmitting] = useState(false)
+  const [done,       setDone]       = useState(false)
+  const [err,        setErr]        = useState('')
+
+  const handleSubmit = async (e) => {
+    e.preventDefault()
+    if (!rating) { setErr('Please select a star rating.'); return }
+    setSubmitting(true)
+    setErr('')
+    try {
+      await axios.post('/api/reviews', {
+        rating,
+        review_text: text,
+        use_case:    useCase,
+      })
+      setDone(true)
+      onSubmitted?.()
+    } catch {
+      setErr('Failed to submit — please try again.')
+    } finally {
+      setSubmitting(false)
+    }
+  }
+
+  if (done) {
+    return (
+      <div className="text-center py-6">
+        <div className="text-4xl mb-2">🎉</div>
+        <p className="font-semibold text-green-700">Thank you for your feedback!</p>
+        <p className="text-sm text-gray-500 mt-1">Your review helps improve the service.</p>
+      </div>
+    )
+  }
+
+  return (
+    <form onSubmit={handleSubmit} className="space-y-4">
+      <div>
+        <label className="block text-sm font-medium text-gray-700 mb-2">Your Rating</label>
+        <StarRating value={rating} onChange={setRating} />
+        {rating > 0 && (
+          <p className="text-xs text-gray-500 mt-1">
+            {['','Poor','Fair','Good','Very Good','Excellent'][rating]}
+          </p>
+        )}
+      </div>
+
+      <div>
+        <label className="block text-sm font-medium text-gray-700 mb-1">Use Case (optional)</label>
+        <select
+          value={useCase}
+          onChange={(e) => setUseCase(e.target.value)}
+          className="w-full text-sm border border-gray-300 rounded-md px-3 py-2 focus:outline-none focus:ring-2 focus:ring-indigo-400"
+        >
+          {USE_CASES.map((u) => <option key={u} value={u}>{u || '— Select —'}</option>)}
+        </select>
+      </div>
+
+      <div>
+        <label className="block text-sm font-medium text-gray-700 mb-1">Review (optional)</label>
+        <textarea
+          value={text}
+          onChange={(e) => setText(e.target.value)}
+          maxLength={2000}
+          rows={3}
+          placeholder="What did you use it for? What worked well? What could be better?"
+          className="w-full text-sm border border-gray-300 rounded-md px-3 py-2 resize-none focus:outline-none focus:ring-2 focus:ring-indigo-400"
+        />
+        <p className="text-xs text-gray-400 text-right">{text.length}/2000</p>
+      </div>
+
+      {err && <p className="text-sm text-red-600">{err}</p>}
+
+      <button
+        type="submit"
+        disabled={submitting}
+        className="w-full py-2 px-4 bg-indigo-600 text-white text-sm font-medium rounded-md hover:bg-indigo-700 disabled:opacity-50 transition"
+      >
+        {submitting ? 'Submitting…' : 'Submit Review'}
+      </button>
+    </form>
+  )
+}
+
+function ReviewCard({ review }) {
+  const date = review.created_at ? new Date(review.created_at).toLocaleDateString() : '—'
+  const sentimentColor = {
+    positive: 'text-green-600',
+    neutral:  'text-gray-500',
+    negative: 'text-red-500',
+  }[review.sentiment] ?? 'text-gray-400'
+
+  return (
+    <div className="bg-white rounded-xl border border-gray-200 p-4 space-y-2">
+      <div className="flex items-center justify-between">
+        <StarRating value={review.rating} readonly />
+        <span className="text-xs text-gray-400">{date}</span>
+      </div>
+      {review.use_case && (
+        <span className="inline-block text-xs px-2 py-0.5 rounded-full bg-indigo-50 text-indigo-700 font-medium">
+          {review.use_case}
+        </span>
+      )}
+      {review.review_text && (
+        <p className="text-sm text-gray-700 leading-relaxed">{review.review_text}</p>
+      )}
+      {review.sentiment && (
+        <p className={`text-xs font-medium ${sentimentColor}`}>
+          Sentiment: {review.sentiment}
+          {review.sentiment_score != null && ` (${review.sentiment_score.toFixed(2)})`}
+        </p>
+      )}
+    </div>
+  )
+}
+
 export default function Dashboard() {
   const [stats,    setStats]    = useState(null)
   const [jobs,     setJobs]     = useState([])
   const [cache,    setCache]    = useState(null)
+  const [reviews,  setReviews]  = useState([])
+  const [revStats, setRevStats] = useState(null)
   const [loading,  setLoading]  = useState(true)
   const [error,    setError]    = useState(null)
   const [lastSync, setLastSync] = useState(null)
 
   const fetchAll = useCallback(async () => {
     try {
-      const [sRes, jRes, cRes] = await Promise.all([
+      const [sRes, jRes, cRes, rRes] = await Promise.all([
         axios.get('/api/dashboard/stats'),
         axios.get('/api/dashboard/jobs?limit=20'),
         axios.get('/api/dashboard/cache-status'),
+        axios.get('/api/dashboard/reviews?limit=10'),
       ])
       setStats(sRes.data)
       setJobs(jRes.data.jobs ?? [])
       setCache(cRes.data)
+      setReviews(rRes.data.reviews ?? [])
+      setRevStats(rRes.data.stats ?? null)
       setError(null)
       setLastSync(new Date().toLocaleTimeString())
     } catch (err) {
@@ -77,6 +242,7 @@ export default function Dashboard() {
   const fmtMs = (ms) => {
     const n = Number(ms)
     if (ms == null || isNaN(n) || n < 0) return '—'
+    if (n === 0) return '—'
     return n >= 1000 ? `${(n / 1000).toFixed(1)}s` : `${Math.round(n)}ms`
   }
   const hitRate = stats ? (stats.total > 0 ? Math.round((stats.cache_hits / stats.total) * 100) : 0) : 0
@@ -226,7 +392,6 @@ export default function Dashboard() {
                   const dur      = fmtMs(job.duration_ms)
                   const created  = job.created_at ? new Date(job.created_at).toLocaleString() : '—'
 
-                  // Reason colour per status
                   const reasonStyle =
                     job.status === 'failed'     ? 'text-red-600' :
                     job.status === 'processing' ? 'text-blue-600 animate-pulse' :
@@ -259,6 +424,54 @@ export default function Dashboard() {
           </div>
         )}
       </div>
+
+      {/* ── Reviews & Ratings ─────────────────────────────────────────────── */}
+      <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+
+        {/* Submit review */}
+        <div className="bg-white rounded-xl border border-gray-200 p-6">
+          <h3 className="text-base font-semibold text-gray-800 mb-1">Rate Your Experience</h3>
+          <p className="text-xs text-gray-500 mb-4">
+            Your feedback is stored for quality analysis and future ML sentiment modelling.
+          </p>
+          <ReviewForm onSubmitted={fetchAll} />
+        </div>
+
+        {/* Aggregate stats */}
+        <div className="bg-white rounded-xl border border-gray-200 p-6 space-y-5">
+          <h3 className="text-base font-semibold text-gray-800">User Ratings</h3>
+
+          {!revStats || revStats.total === 0 ? (
+            <p className="text-sm text-gray-400">No reviews yet — be the first!</p>
+          ) : (
+            <>
+              {/* Overall score */}
+              <div className="flex items-center gap-4">
+                <div className="text-center">
+                  <p className="text-5xl font-bold text-gray-900">{revStats.avg_rating.toFixed(1)}</p>
+                  <StarRating value={Math.round(revStats.avg_rating)} readonly />
+                  <p className="text-xs text-gray-400 mt-1">{revStats.total} review{revStats.total !== 1 ? 's' : ''}</p>
+                </div>
+                <div className="flex-1 space-y-1.5">
+                  {[5, 4, 3, 2, 1].map((s) => (
+                    <RatingBar key={s} star={s} count={revStats.distribution[s] ?? 0} total={revStats.total} />
+                  ))}
+                </div>
+              </div>
+            </>
+          )}
+        </div>
+      </div>
+
+      {/* Recent reviews list */}
+      {reviews.length > 0 && (
+        <div>
+          <h3 className="text-sm font-semibold text-gray-700 mb-3">Recent Reviews</h3>
+          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
+            {reviews.map((r) => <ReviewCard key={r.review_id} review={r} />)}
+          </div>
+        </div>
+      )}
 
     </div>
   )
