@@ -219,6 +219,13 @@ def setup_logging() -> None:
     root.setLevel(numeric_level)
 
     # ── Console handler ────────────────────────────────────────────────────────
+    # On Windows the default stdout encoding is cp1252 which can't render
+    # Unicode arrows/checkmarks used in log messages.  Reconfigure to utf-8.
+    if hasattr(sys.stdout, "reconfigure"):
+        try:
+            sys.stdout.reconfigure(encoding="utf-8")
+        except Exception:
+            pass
     console_handler = logging.StreamHandler(sys.stdout)
     console_handler.setLevel(numeric_level)
     console_handler.setFormatter(

@@ -38,17 +38,40 @@ Public API
     get_all_documents(vector_store)     → list[Document]
 """
 
+import os
 from pathlib import Path
 
 from langchain_core.documents import Document
 from langchain_community.vectorstores import FAISS
-from langchain_openai import OpenAIEmbeddings
 from langchain_text_splitters import RecursiveCharacterTextSplitter
 
 import config
 from observability.logger import get_logger
 
 logger = get_logger(__name__)
+
+# Lazy singleton — HuggingFaceEmbeddings is NOT imported at module level to
+# avoid the sentence-transformers → transformers → heavy import chain running
+# in a background worker thread (causes a Windows hang on first import).
+_embeddings = None
+
+
+def _get_embeddings():
+    global _embeddings
+    if _embeddings is None:
+        # Set env vars before the first import of langchain_huggingface
+        os.environ["USE_TORCH"] = "1"
+        os.environ["USE_TF"]    = "0"
+        os.environ.setdefault("HF_HUB_OFFLINE",       "1")
+        os.environ.setdefault("TRANSFORMERS_OFFLINE",  "1")
+        os.environ.setdefault("TOKENIZERS_PARALLELISM","false")
+        from langchain_huggingface import HuggingFaceEmbeddings  # noqa: PLC0415
+        _embeddings = HuggingFaceEmbeddings(
+            model_name=config.EMBEDDING_MODEL,
+            model_kwargs={"device": "cpu"},
+            encode_kwargs={"normalize_embeddings": True},
+        )
+    return _embeddings
 
 
 # ─── Text splitting ────────────────────────────────────────────────────────────
@@ -154,17 +177,13 @@ def build_vector_store(chunks: list[Document]) -> FAISS:
     if not chunks:
         raise ValueError("Cannot build a vector store from an empty chunk list.")
 
-    # OpenAIEmbeddings will use the OPENAI_API_KEY environment variable.
-    # model is explicitly set from config to ensure reproducible results
-    # — if the default model changes in a future library version, we are
-    # not silently switched to a different embedding space.
-    embeddings = OpenAIEmbeddings(model=config.OPENAI_EMBEDDING_MODEL)
+    embeddings = _get_embeddings()
 
     logger.info(
         "Building FAISS vector store from %d chunks using model '%s' …",
         len(chunks),
-        config.OPENAI_EMBEDDING_MODEL,
-        extra={"num_chunks": len(chunks), "embedding_model": config.OPENAI_EMBEDDING_MODEL},
+        config.EMBEDDING_MODEL,
+        extra={"num_chunks": len(chunks), "embedding_model": config.EMBEDDING_MODEL},
     )
 
     vector_store = FAISS.from_documents(chunks, embeddings)
@@ -212,7 +231,7 @@ def load_vector_store() -> FAISS:
             "Run the pipeline first to generate the index."
         )
 
-    embeddings = OpenAIEmbeddings(model=config.OPENAI_EMBEDDING_MODEL)
+    embeddings = _get_embeddings()
 
     vector_store = FAISS.load_local(
         str(index_path),

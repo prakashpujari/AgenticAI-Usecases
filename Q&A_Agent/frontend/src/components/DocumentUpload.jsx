@@ -1,13 +1,40 @@
 import { useState } from 'react'
 import axios from 'axios'
+import RateLimitBanner from './RateLimitBanner'
+import { parseApiError, getDeviceFingerprint } from '../utils/errorHandler'
+
+const MAX_FILE_BYTES = 50 * 1024 * 1024 // 50 MB
+const ALLOWED_EXTENSIONS = new Set([
+  // Documents
+  'pdf','txt','md','rst','docx',
+  // Spreadsheets
+  'xlsx','xls','csv',
+  // Images
+  'png','jpg','jpeg','webp',
+  // Audio / Video
+  'mp3','wav','m4a','mp4','mov','avi','webm','mkv',
+])
+
+const ACCEPTED_LABEL = 'PDF, DOCX, TXT, MD, RST · XLSX, XLS, CSV · PNG, JPG, JPEG, WEBP · MP3, WAV, M4A, MP4, MOV, AVI, WEBM, MKV'
+
+function validateFileClient(f) {
+  const ext = f.name.split('.').pop()?.toLowerCase() ?? ''
+  if (!ALLOWED_EXTENSIONS.has(ext))
+    return `Unsupported file type ".${ext}". Accepted: ${ACCEPTED_LABEL}`
+  if (f.size > MAX_FILE_BYTES)
+    return `File is too large (${(f.size / 1024 / 1024).toFixed(1)} MB). Maximum is 50 MB.`
+  return null
+}
 
 export default function DocumentUpload({ onJobSubmitted }) {
   const [inputMode, setInputMode] = useState('file')
+  const [outputMode, setOutputMode] = useState('questions')
   const [file, setFile] = useState(null)
   const [source, setSource] = useState('')
   const [numQuestions, setNumQuestions] = useState(5)
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState(null)
+  const [rateLimitInfo, setRateLimitInfo] = useState(null) // { retryAfter, debugId }
   const [dragActive, setDragActive] = useState(false)
 
   const handleDrag = (e) => {
@@ -34,7 +61,10 @@ export default function DocumentUpload({ onJobSubmitted }) {
 
   const handleFileChange = (e) => {
     if (e.target.files && e.target.files[0]) {
-      setFile(e.target.files[0])
+      const f = e.target.files[0]
+      const clientErr = validateFileClient(f)
+      if (clientErr) { setError(clientErr); return }
+      setFile(f)
       setError(null)
     }
   }
@@ -55,21 +85,27 @@ export default function DocumentUpload({ onJobSubmitted }) {
 
     setLoading(true)
     setError(null)
+    setRateLimitInfo(null)
 
     try {
+      const fingerprint = await getDeviceFingerprint()
+      const headers = { 'X-Device-Fingerprint': fingerprint }
       let response
+
       if (inputMode === 'file') {
         const formData = new FormData()
         formData.append('file', file)
         formData.append('num_questions', numQuestions)
+        formData.append('output_mode', outputMode)
         response = await axios.post('/api/qa/generate', formData, {
-          headers: { 'Content-Type': 'multipart/form-data' },
+          headers: { ...headers, 'Content-Type': 'multipart/form-data' },
         })
       } else {
         response = await axios.post('/api/qa/generate-source', {
           source: source.trim(),
           num_questions: numQuestions,
-        })
+          output_mode: outputMode,
+        }, { headers })
       }
 
       onJobSubmitted(response.data.pipeline_id)
@@ -77,7 +113,12 @@ export default function DocumentUpload({ onJobSubmitted }) {
       setSource('')
       setNumQuestions(5)
     } catch (err) {
-      setError(err.response?.data?.detail || 'Failed to submit job')
+      const parsed = parseApiError(err)
+      if (parsed.errorCode === 'RATE_LIMIT_EXCEEDED' || parsed.errorCode === 'SPIKE_ARREST') {
+        setRateLimitInfo({ retryAfter: parsed.retryAfter, debugId: parsed.debugId })
+      } else {
+        setError(parsed.message)
+      }
     } finally {
       setLoading(false)
     }
@@ -87,13 +128,11 @@ export default function DocumentUpload({ onJobSubmitted }) {
     <div className="bg-white rounded-lg shadow-md p-8">
       <h2 className="text-2xl font-bold text-gray-900 mb-6">Upload Document</h2>
 
+      {/* Input mode toggle */}
       <div className="mb-6 grid grid-cols-2 gap-2">
         <button
           type="button"
-          onClick={() => {
-            setInputMode('file')
-            setError(null)
-          }}
+          onClick={() => { setInputMode('file'); setError(null) }}
           className={`px-4 py-2 rounded-md border font-medium transition ${
             inputMode === 'file'
               ? 'bg-indigo-600 text-white border-indigo-600'
@@ -104,10 +143,7 @@ export default function DocumentUpload({ onJobSubmitted }) {
         </button>
         <button
           type="button"
-          onClick={() => {
-            setInputMode('source')
-            setError(null)
-          }}
+          onClick={() => { setInputMode('source'); setError(null) }}
           className={`px-4 py-2 rounded-md border font-medium transition ${
             inputMode === 'source'
               ? 'bg-indigo-600 text-white border-indigo-600'
@@ -116,6 +152,36 @@ export default function DocumentUpload({ onJobSubmitted }) {
         >
           URL / Source
         </button>
+      </div>
+
+      {/* Output mode selector */}
+      <div className="mb-6">
+        <label className="block text-sm font-medium text-gray-700 mb-2">
+          What would you like to generate?
+        </label>
+        <div className="grid grid-cols-3 gap-2">
+          {[
+            { value: 'text',      label: '📄 Captured Text',   desc: 'LLM summary of the document' },
+            { value: 'questions', label: '❓ Q&A Questions',    desc: 'Multiple-choice questions' },
+            { value: 'both',      label: '📋 Both',             desc: 'Summary + questions' },
+          ].map(({ value, label, desc }) => (
+            <button
+              key={value}
+              type="button"
+              onClick={() => setOutputMode(value)}
+              className={`flex flex-col items-center px-3 py-3 rounded-md border text-sm font-medium transition ${
+                outputMode === value
+                  ? 'bg-indigo-600 text-white border-indigo-600'
+                  : 'bg-white text-gray-700 border-gray-300 hover:bg-gray-50'
+              }`}
+            >
+              <span>{label}</span>
+              <span className={`text-xs mt-1 ${outputMode === value ? 'text-indigo-100' : 'text-gray-400'}`}>
+                {desc}
+              </span>
+            </button>
+          ))}
+        </div>
       </div>
 
       <form onSubmit={handleSubmit}>
@@ -134,7 +200,7 @@ export default function DocumentUpload({ onJobSubmitted }) {
             <input
               type="file"
               onChange={handleFileChange}
-              accept=".pdf,.txt,.md,.docx,.xlsx,.csv,.png,.jpg,.jpeg,.webp,.mp3,.wav,.m4a,.aac,.webm,.mp4,.mov,.avi,.mkv"
+              accept=".pdf,.txt,.md,.rst,.docx,.xlsx,.xls,.csv,.png,.jpg,.jpeg,.webp,.mp3,.wav,.m4a,.mp4,.mov,.avi,.webm,.mkv"
               className="hidden"
               id="file-input"
               disabled={loading}
@@ -184,23 +250,34 @@ export default function DocumentUpload({ onJobSubmitted }) {
           </div>
         )}
 
-        {/* Number of Questions */}
-        <div className="mt-6">
-          <label className="block text-sm font-medium text-gray-700 mb-2">
-            Number of Questions
-          </label>
-          <input
-            type="number"
-            min="1"
-            max="20"
-            value={numQuestions}
-            onChange={(e) => setNumQuestions(parseInt(e.target.value))}
-            disabled={loading}
-            className="w-full px-3 py-2 border border-gray-300 rounded-md shadow-sm focus:outline-none focus:ring-indigo-500 focus:border-indigo-500"
-          />
-        </div>
+        {/* Number of Questions — hidden when text-only mode */}
+        {outputMode !== 'text' && (
+          <div className="mt-6">
+            <label className="block text-sm font-medium text-gray-700 mb-2">
+              Number of Questions
+            </label>
+            <input
+              type="number"
+              min="1"
+              max="20"
+              value={numQuestions}
+              onChange={(e) => setNumQuestions(parseInt(e.target.value))}
+              disabled={loading}
+              className="w-full px-3 py-2 border border-gray-300 rounded-md shadow-sm focus:outline-none focus:ring-indigo-500 focus:border-indigo-500"
+            />
+          </div>
+        )}
 
-        {/* Error Message */}
+        {/* Rate-limit countdown */}
+        {rateLimitInfo && (
+          <RateLimitBanner
+            retryAfter={rateLimitInfo.retryAfter}
+            debugId={rateLimitInfo.debugId}
+            onExpired={() => setRateLimitInfo(null)}
+          />
+        )}
+
+        {/* General error */}
         {error && (
           <div className="mt-4 p-4 bg-red-50 border border-red-200 rounded-md">
             <p className="text-sm text-red-800">{error}</p>
@@ -220,15 +297,14 @@ export default function DocumentUpload({ onJobSubmitted }) {
       {/* Supported Formats */}
       <div className="mt-6 p-4 bg-blue-50 border border-blue-200 rounded-md">
         <h3 className="text-sm font-medium text-blue-900">Supported Formats</h3>
-        <ul className="text-sm text-blue-800 mt-2 space-y-1">
-          <li>• PDF documents</li>
-          <li>• Text files (TXT, MD, RST)</li>
-          <li>• Word documents (DOCX)</li>
-          <li>• Spreadsheets (XLSX, CSV)</li>
-          <li>• Website and YouTube URLs</li>
-          <li>• Images (PNG, JPG, WEBP)</li>
-          <li>• Audio and video (MP3, WAV, MP4, WEBM)</li>
-        </ul>
+        <div className="mt-2 grid grid-cols-1 sm:grid-cols-2 gap-x-4 gap-y-1 text-sm text-blue-800">
+          <span>📄 Documents — PDF, TXT, MD, RST, DOCX</span>
+          <span>📊 Spreadsheets — XLSX, XLS, CSV</span>
+          <span>🖼️ Images — PNG, JPG, JPEG, WEBP</span>
+          <span>🎵 Audio — MP3, WAV, M4A</span>
+          <span>🎬 Video — MP4, MOV, AVI, WEBM, MKV</span>
+          <span>🔗 URLs — Web pages &amp; YouTube</span>
+        </div>
       </div>
     </div>
   )

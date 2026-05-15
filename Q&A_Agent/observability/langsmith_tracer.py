@@ -48,7 +48,7 @@ context manager in main.py:
     with langsmith.trace(
         name="Q&A Pipeline",
         run_type="chain",
-        metadata={"pipeline_id": metrics.pipeline_id, "model": config.OPENAI_MODEL},
+        metadata={"pipeline_id": metrics.pipeline_id, "model": config.GROQ_MODEL},
     ):
         ...  # all LangChain calls inside here are nested under this parent run
 

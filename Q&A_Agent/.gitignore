@@ -1,4 +1,4 @@
-# ── Environment & secrets ─────────────────────────────────────────────────────
+# ── Environment & secrets ──────────────────────────────────────────────────────
 .env
 *.env.*
 !.env.example
@@ -8,9 +8,7 @@ __pycache__/
 *.py[cod]
 *.pyo
 *.pyd
-.Python
 *.egg-info/
-dist/
 build/
 *.egg
 .eggs/
@@ -21,13 +19,32 @@ venv/
 env/
 ENV/
 
-# ── Generated outputs ─────────────────────────────────────────────────────────
-# Use /output to anchor to the repo root only — avoids ignoring src/output/
+# ── Generated pipeline outputs (job-specific PDFs, MDs, metrics) ───────────────
+# Anchored to repo root so src/output/ (source code) is NOT ignored.
 /output/
-/logs/
+!/output/.gitkeep
 
-# ── FAISS index (large binary, regenerated on each run) ──────────────────────
+# ── Log files ─────────────────────────────────────────────────────────────────
+/logs/*.log
+!/logs/.gitkeep
+
+# ── FAISS index (binary, regenerated on each run) ─────────────────────────────
 data/faiss_index/
+
+# ── API runtime files (uploads + SQLite job database) ─────────────────────────
+api/uploads/*
+!api/uploads/.gitkeep
+api/jobs.db
+
+# ── Frontend build artifacts (Vercel builds from source) ──────────────────────
+frontend/dist/
+frontend/node_modules/
+
+# ── Testing / coverage ────────────────────────────────────────────────────────
+.pytest_cache/
+.coverage
+htmlcov/
+.deepeval/
 
 # ── IDE / editor ──────────────────────────────────────────────────────────────
 .vscode/
@@ -40,8 +57,3 @@ data/faiss_index/
 .DS_Store
 Thumbs.db
 desktop.ini
-
-# ── Pytest / coverage ─────────────────────────────────────────────────────────
-.pytest_cache/
-.coverage
-htmlcov/

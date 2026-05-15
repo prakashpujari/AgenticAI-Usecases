@@ -34,6 +34,12 @@ from dotenv import load_dotenv
 # Must run before any os.getenv() call so the .env values are available.
 load_dotenv()
 
+# Force PyTorch-only mode in transformers — prevents the broken TF import chain
+# (transformers → image_transforms → tensorflow → protobuf version error).
+# Must be set before any 'import transformers' happens anywhere in the process.
+os.environ["USE_TORCH"] = "1"
+os.environ["USE_TF"] = "0"
+
 # ─── Directory layout ─────────────────────────────────────────────────────────
 # BASE_DIR is the project root (the directory containing this file).
 # All other paths are expressed relative to it so the project is relocatable.
@@ -55,13 +61,51 @@ OUTPUT_PDF_PATH: Path      = OUTPUT_DIR / "qa_output.pdf"
 # Pipeline metrics JSON report — written at the end of every successful run.
 METRICS_REPORT_PATH: Path  = OUTPUT_DIR / "pipeline_metrics.json"
 
-# ─── OpenAI ────────────────────────────────────────────────────────────────────
-# OPENAI_API_KEY must be set; an empty string causes an EnvironmentError at
-# the first API call.  We deliberately do NOT raise here to allow the config
-# module to be imported during tests that mock the API.
-OPENAI_API_KEY: str         = os.getenv("OPENAI_API_KEY", "")
-OPENAI_MODEL: str           = os.getenv("OPENAI_MODEL", "gpt-4o")
-OPENAI_EMBEDDING_MODEL: str = os.getenv("OPENAI_EMBEDDING_MODEL", "text-embedding-3-small")
+# ─── Groq ──────────────────────────────────────────────────────────────────────
+GROQ_API_KEY: str        = os.getenv("GROQ_API_KEY", "")
+GROQ_MODEL: str          = os.getenv("GROQ_MODEL", "llama-3.3-70b-versatile")
+GROQ_FALLBACK_MODEL: str = os.getenv("GROQ_FALLBACK_MODEL", "llama-3.1-8b-instant")
+GROQ_VISION_MODEL: str   = os.getenv("GROQ_VISION_MODEL", "meta-llama/llama-4-scout-17b-16e-instruct")
+
+# Embeddings use a local ONNX model via fastembed (Groq has no embedding API).
+EMBEDDING_MODEL: str = os.getenv("EMBEDDING_MODEL", "sentence-transformers/all-MiniLM-L6-v2")
+
+# ─── Redis (rate limiting + response cache) ───────────────────────────────────
+# When REDIS_URL is empty the rate limiter falls back to in-memory counters
+# and the response cache is disabled.
+REDIS_URL: str = os.getenv("REDIS_URL", "")
+
+# How long (seconds) to cache a pipeline result keyed on content hash.
+# 0 = caching disabled.
+CACHE_TTL: int = int(os.getenv("CACHE_TTL", "86400"))  # 24 hours
+
+# ─── PostgreSQL (job persistence + dashboard analytics) ───────────────────────
+# When DATABASE_URL is empty, the server falls back to SQLite.
+DATABASE_URL: str = os.getenv(
+    "DATABASE_URL",
+    "postgresql://postgres:postgres@localhost:5432/postgres",
+)
+
+# ─── Rate limiting ─────────────────────────────────────────────────────────────
+RATE_LIMIT_MAX:    int   = int(os.getenv("RATE_LIMIT_MAX",    "10"))
+RATE_LIMIT_WINDOW: int   = int(os.getenv("RATE_LIMIT_WINDOW", "3600"))  # seconds
+BURST_MAX:         int   = int(os.getenv("BURST_MAX",         "3"))
+BURST_REFILL_RATE: float = float(os.getenv("BURST_REFILL_RATE", "0.05")) # tokens/sec (3/min)
+GLOBAL_LLM_MAX:    int   = int(os.getenv("GLOBAL_LLM_MAX",   "100"))    # per minute
+
+# ─── Security ─────────────────────────────────────────────────────────────────
+# IDENTITY_HMAC_SECRET must be a random 32-byte hex string.
+# Used to one-way hash IP/fingerprint before storing in Redis (GDPR-safe).
+IDENTITY_HMAC_SECRET: str = os.getenv(
+    "IDENTITY_HMAC_SECRET",
+    "dev-secret-change-in-production-000000000000000000000000",
+)
+
+# Allowed CORS origin — set to your exact Vercel domain in production.
+CORS_ALLOWED_ORIGIN: str = os.getenv(
+    "CORS_ALLOWED_ORIGIN",
+    "*",  # permissive default for local dev; lock down in production
+)
 
 # ─── RAG / text-splitting ──────────────────────────────────────────────────────
 # CHUNK_SIZE controls the maximum number of characters per chunk fed to the

@@ -57,15 +57,6 @@ _langsmith_active = setup_langsmith()  # sets LANGCHAIN_* env vars; returns bool
 # ── Local imports (after logging is configured) ───────────────────────────────
 import config
 from observability.logger import get_logger
-from src.pipeline.stages import (
-    stage_generate_pdf,
-    stage_extract_text,
-    stage_split_text,
-    stage_build_vector_store,
-    stage_generate_questions,
-    stage_format_markdown,
-    stage_convert_to_pdf,
-)
 
 logger = get_logger("qa_agent.main")
 
@@ -134,11 +125,11 @@ def main() -> None:
                 sys.exit(1)
 
     # ── Pre-flight: validate configuration ────────────────────────────────────
-    if not config.OPENAI_API_KEY:
+    if not config.GROQ_API_KEY:
         logger.error(
-            "OPENAI_API_KEY is not set.\n"
+            "GROQ_API_KEY is not set.\n"
             "  1. Copy .env.example to .env\n"
-            "  2. Set OPENAI_API_KEY=<your OpenAI key>\n"
+            "  2. Set GROQ_API_KEY=<your Groq key>\n"
             "  3. Re-run:  python main.py"
         )
         sys.exit(1)
@@ -153,11 +144,11 @@ def main() -> None:
     logger.info(
         "Pipeline %s starting — model=%s  questions=%d",
         metrics.pipeline_id,
-        config.OPENAI_MODEL,
+        config.GROQ_MODEL,
         config.NUM_QUESTIONS,
         extra={
             "pipeline_id":   metrics.pipeline_id,
-            "model":         config.OPENAI_MODEL,
+            "model":         config.GROQ_MODEL,
             "num_questions": config.NUM_QUESTIONS,
         },
     )
@@ -179,7 +170,7 @@ def main() -> None:
                 run_type="chain",
                 metadata={
                     "pipeline_id":   metrics.pipeline_id,
-                    "model":         config.OPENAI_MODEL,
+                    "model":         config.GROQ_MODEL,
                     "num_questions": config.NUM_QUESTIONS,
                     "project":       config.LANGCHAIN_PROJECT,
                 },
@@ -196,119 +187,72 @@ def main() -> None:
 
 def _run_pipeline(metrics: PipelineMetrics, *, input_source: "Path | str | None" = None) -> None:
     """
-    Inner pipeline runner — all 7 stage calls, error handling, and final reporting.
+    Inner pipeline runner — delegates to the LangGraph state machine.
 
-    Args:
-        metrics:      Active PipelineMetrics instance.
-        input_source: Optional local file path or URL supplied via --input.
-                      When None the pipeline generates (or reuses) the built-in
-                      sample PDF.
-
-    Separated from main() so it can be cleanly wrapped in the LangSmith parent
-    trace context manager without nesting the entire main() body inside a try/with.
+    Stage 1 (PDF generation / source resolution) still runs here because it
+    predates the graph and requires CLI-specific logic (--input flag handling).
+    All remaining stages (2-7) are orchestrated by the LangGraph graph.
     """
+    from src.pipeline.stages import stage_generate_pdf
+    from src.pipeline.graph import run_pipeline_graph
+
     try:
-        # ── Stage 1: Generate sample source PDF ───────────────────────────────
-        # Skipped entirely when the user supplies their own document via --input.
+        # ── Stage 1: Resolve / generate source document ───────────────────────
         if input_source is not None:
-            # User provided a custom document — skip PDF generation
             resolved_source = input_source
             source_label = (
                 Path(input_source).name
                 if not str(input_source).startswith("http")
                 else str(input_source)
             )
-            logger.info(
-                "[1/7] Custom input document provided — skipping sample PDF generation: %s",
-                resolved_source,
-            )
+            logger.info("[1/7] Custom input: %s", resolved_source)
             with metrics.stage("generate_sample_pdf") as s:
-                s.add("skipped",       True)
-                s.add("input_source",  str(resolved_source))
+                s.add("skipped", True)
+                s.add("input_source", str(resolved_source))
+
         elif config.SAMPLE_PDF_PATH.exists():
             resolved_source = config.SAMPLE_PDF_PATH
-            source_label = config.SAMPLE_PDF_PATH.name
-            logger.info(
-                "[1/7] Sample PDF already exists, skipping: %s",
-                config.SAMPLE_PDF_PATH,
-            )
+            source_label    = config.SAMPLE_PDF_PATH.name
+            logger.info("[1/7] Reusing existing sample PDF: %s", resolved_source)
             with metrics.stage("generate_sample_pdf") as s:
-                s.add("skipped",  True)
-                s.add("pdf_path", str(resolved_source))
+                s.add("skipped", True)
+
         else:
             logger.info("[1/7] Generating sample PDF …")
             resolved_source = stage_generate_pdf(config.SAMPLE_PDF_PATH, metrics)
-            source_label = config.SAMPLE_PDF_PATH.name
+            source_label    = config.SAMPLE_PDF_PATH.name
             logger.info("      ✓ PDF created: %s", resolved_source)
 
-        # ── Stage 2: Extract and clean text ───────────────────────────────────
-        logger.info("[2/7] Extracting and cleaning text from: %s …", resolved_source)
-        clean_text = stage_extract_text(resolved_source, metrics)
-        logger.info("      ✓ Extracted %d characters", len(clean_text))
-
-        # ── Stage 3: Split text into chunks ───────────────────────────────────
-        logger.info("[3/7] Splitting text into chunks …")
-        chunks = stage_split_text(clean_text, metrics)
-        logger.info("      ✓ %d chunks created", len(chunks))
-
-        # ── Stage 4: Embed chunks + build FAISS index ──────────────────────────
-        logger.info(
-            "[4/7] Building FAISS vector store (%d chunks, embedding model: %s) …",
-            len(chunks),
-            config.OPENAI_EMBEDDING_MODEL,
+        # ── Stages 2-7: LangGraph state machine ──────────────────────────────
+        run_pipeline_graph(
+            input_source    = str(resolved_source),
+            pipeline_id     = metrics.pipeline_id,
+            output_mode     = "questions",
+            num_questions   = config.NUM_QUESTIONS,
+            request_id      = metrics.pipeline_id,
+            source_label    = source_label,
+            output_md_path  = str(config.OUTPUT_MARKDOWN_PATH),
+            output_pdf_path = str(config.OUTPUT_PDF_PATH),
+            metrics         = metrics,
         )
-        logger.info("      (Calls the OpenAI Embeddings API — may take a few seconds)")
-        vector_store = stage_build_vector_store(chunks, metrics)
-        logger.info("      ✓ FAISS index built and saved to %s", config.FAISS_INDEX_PATH)
-
-        # ── Stage 5: Generate MCQ questions ───────────────────────────────────
-        logger.info(
-            "[5/7] Generating %d questions with %s …",
-            config.NUM_QUESTIONS,
-            config.OPENAI_MODEL,
-        )
-        logger.info("      (Calls the OpenAI Chat API — may take ~20–40 s)")
-        questions = stage_generate_questions(vector_store, metrics)
-        logger.info("      ✓ %d questions generated", len(questions))
-
-        # ── Stage 6: Format as Markdown ────────────────────────────────────────
-        logger.info("[6/7] Formatting questions as Markdown …")
-        stage_format_markdown(
-            questions,
-            source_name=source_label,
-            output_path=config.OUTPUT_MARKDOWN_PATH,
-            metrics=metrics,
-        )
-        logger.info("      ✓ Markdown saved: %s", config.OUTPUT_MARKDOWN_PATH)
-
-        # ── Stage 7: Convert to PDF ────────────────────────────────────────────
-        logger.info("[7/7] Converting Markdown → PDF …")
-        pdf_output = stage_convert_to_pdf(
-            config.OUTPUT_MARKDOWN_PATH,
-            config.OUTPUT_PDF_PATH,
-            metrics,
-        )
-        logger.info("      ✓ PDF saved: %s", pdf_output)
 
     except EnvironmentError as exc:
-        # Raised by qa_generator if OPENAI_API_KEY is missing at call time
-        logger.error("Configuration error: %s", exc, extra={"pipeline_id": metrics.pipeline_id})
+        logger.error("Configuration error: %s", exc,
+                     extra={"pipeline_id": metrics.pipeline_id})
         metrics.finish_pipeline(status="failed")
         metrics.save_report(config.METRICS_REPORT_PATH)
         sys.exit(1)
 
     except FileNotFoundError as exc:
-        logger.error("File error: %s", exc, extra={"pipeline_id": metrics.pipeline_id})
+        logger.error("File error: %s", exc,
+                     extra={"pipeline_id": metrics.pipeline_id})
         metrics.finish_pipeline(status="failed")
         metrics.save_report(config.METRICS_REPORT_PATH)
         sys.exit(2)
 
     except Exception as exc:  # noqa: BLE001
-        logger.exception(
-            "Unexpected error during pipeline: %s",
-            exc,
-            extra={"pipeline_id": metrics.pipeline_id},
-        )
+        logger.exception("Unexpected pipeline error: %s", exc,
+                         extra={"pipeline_id": metrics.pipeline_id})
         metrics.finish_pipeline(status="failed")
         metrics.save_report(config.METRICS_REPORT_PATH)
         sys.exit(2)

@@ -3,7 +3,7 @@ import react from '@vitejs/plugin-react'
 
 // Local backend URL — used by the dev-server proxy only.
 // In production (Vercel), /api and /health are rewritten via vercel.json.
-const BACKEND = process.env.VITE_BACKEND_URL || 'http://localhost:8002'
+const BACKEND = process.env.VITE_BACKEND_URL || 'http://localhost:8000'
 
 export default defineConfig({
   plugins: [react()],

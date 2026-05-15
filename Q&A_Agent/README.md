@@ -1,68 +1,443 @@
-# Q&A Agent — End-to-End RAG Pipeline
+# Q&A Agent — AI-Powered Document Q&A Generator
 
-An automated pipeline that ingests a PDF document, builds a semantic vector index, generates multiple-choice questions using GPT-4o, and exports the results as both Markdown and a styled PDF — with full observability via structured logging, per-stage metrics, and LangSmith tracing.
+> Upload any document, paste a URL, or drop a YouTube link — get structured multiple-choice questions and/or an AI summary as a downloadable PDF in seconds.
+
+**Powered by PrakashPujariAI**
 
 ---
 
 ## Table of Contents
 
-1. [Architecture Overview](#architecture-overview)
-2. [Project Structure](#project-structure)
-3. [How It Works — Step by Step](#how-it-works--step-by-step)
-4. [Setup & Installation](#setup--installation)
-5. [Configuration Reference](#configuration-reference)
-6. [Running the Pipeline](#running-the-pipeline)
-7. [Outputs](#outputs)
-8. [Observability](#observability)
-9. [LangSmith Tracing](#langsmith-tracing)
+1. [Overview](#overview)
+2. [Architecture](#architecture)
+3. [Tech Stack](#tech-stack)
+4. [Features](#features)
+5. [Quick Start — Local Development](#quick-start--local-development)
+6. [Configuration Reference](#configuration-reference)
+7. [API Reference](#api-reference)
+8. [Output Modes](#output-modes)
+9. [Supported Input Types](#supported-input-types)
+10. [Security](#security)
+11. [Dashboard & Observability](#dashboard--observability)
+12. [Caching & Performance](#caching--performance)
+13. [Deployment — Render + Vercel](#deployment--render--vercel)
+14. [Project Structure](#project-structure)
 
 ---
 
-## Architecture Overview
+## Overview
+
+Q&A Agent is a production-grade full-stack AI application that turns any document into study material:
+
+- Accepts **20+ file types** plus web URLs and YouTube links
+- Generates **MCQ practice questions** directly from document content via Groq LLM
+- Produces **structured document summaries** via LLM
+- Outputs both as a styled **downloadable PDF**
+- **Two-layer response cache** (Redis + in-memory) — repeated requests skip the LLM entirely
+- **PostgreSQL job persistence** with full dashboard analytics
+- **Rate limiting, spike arrest, WAF, SSRF protection** — production hardened
+- **LangGraph orchestration** — typed state machine pipeline
+- **LLM retry + fallback** — primary → fallback model with exponential backoff
+
+---
+
+## Architecture
 
 ```
-┌─────────────────────────────────────────────────────────────────────────┐
-│                          Q&A Agent Pipeline                             │
-│                                                                         │
-│  ┌──────────┐    ┌──────────┐    ┌──────────┐    ┌──────────────────┐  │
-│  │  Stage 1 │    │  Stage 2 │    │  Stage 3 │    │    Stage 4       │  │
-│  │ Generate │───▶│ Extract  │───▶│  Split   │───▶│  Embed + Build   │  │
-│  │   PDF    │    │  Text    │    │  Chunks  │    │  FAISS Index     │  │
-│  └──────────┘    └──────────┘    └──────────┘    └──────────────────┘  │
-│   ReportLab        pypdf          LangChain         OpenAI Embeddings   │
-│                                  TextSplitter      text-embedding-3-    │
-│                                                         small           │
-│                                                              │           │
-│                                                              ▼           │
-│  ┌──────────┐    ┌──────────┐    ┌───────────────────────────────────┐  │
-│  │  Stage 7 │    │  Stage 6 │    │            Stage 5                │  │
-│  │ MD → PDF │◀───│ Format   │◀───│     Retrieve + Generate Q&A       │  │
-│  │          │    │ Markdown │    │  FAISS similarity search → GPT-4o │  │
-│  └──────────┘    └──────────┘    └───────────────────────────────────┘  │
-│   xhtml2pdf      output_         LangChain LCEL chain:                  │
-│                  formatter       Prompt | ChatOpenAI | StrOutputParser   │
-└─────────────────────────────────────────────────────────────────────────┘
-                                │
-                ┌───────────────┼───────────────┐
-                ▼               ▼               ▼
-          Structured        Per-stage       LangSmith
-           Logging           Metrics         Tracing
-         (JSON Lines)      (JSON report)   (UI traces)
+┌──────────────────────────────────────────────────────────────────────┐
+│                     VERCEL EDGE  (Frontend)                          │
+│                                                                      │
+│   React + Tailwind  ──► /api/* rewrite ──► Render Backend           │
+│   CDN-cached static assets  │  No secrets  │  HTTPS only            │
+└──────────────────────────────────────────────────────────────────────┘
+                              │ HTTPS
+                              ▼
+┌──────────────────────────────────────────────────────────────────────┐
+│                     RENDER  (FastAPI Backend)                        │
+│                                                                      │
+│  ┌─────────────────────────────────────────────────────────────┐    │
+│  │  Middleware Stack                                            │    │
+│  │  RequestId → BodySizeLimit → CORS → extract_identity()      │    │
+│  │  → check_spike_arrest() → check_rate_limit()                │    │
+│  │  → waf_scan() → validate_file/url()                        │    │
+│  └──────────────────────┬──────────────────────────────────────┘    │
+│                          │                                           │
+│  ┌───────────────────────▼──────────────────────────────────────┐   │
+│  │  Cache Check (Redis → In-Memory LRU)                         │   │
+│  │  HIT → return cached PDF  │  MISS → queue job               │   │
+│  └───────────────────────┬──────────────────────────────────────┘   │
+│                          │                                           │
+│  ┌───────────────────────▼──────────────────────────────────────┐   │
+│  │  Background Worker  (5-min hard timeout per job)             │   │
+│  │                                                              │   │
+│  │  LangGraph Pipeline:                                         │   │
+│  │  extract_text → [summarize_text | generate_questions]        │   │
+│  │               → format_output → convert_pdf                  │   │
+│  │                                                              │   │
+│  │  LLM: Groq llama-3.3-70b-versatile                          │   │
+│  │       ↳ fallback: llama-3.1-8b-instant                      │   │
+│  │       ↳ retry: 3 attempts + exponential backoff             │   │
+│  └───────────────────────┬──────────────────────────────────────┘   │
+│                          │                                           │
+│  ┌───────────────────────▼──────────────────────────────────────┐   │
+│  │  PostgreSQL (primary) / SQLite (fallback)                    │   │
+│  │  • qa_jobs — status, duration, cached flag, error reason     │   │
+│  │  • qa_stage_timings — per-stage performance metrics          │   │
+│  └──────────────────────────────────────────────────────────────┘   │
+│                                                                      │
+│  Redis (response cache + rate limiting)                              │
+└──────────────────────────────────────────────────────────────────────┘
 ```
 
-### Key Technology Choices
+### LangGraph Pipeline Flow
 
-| Concern | Technology | Why |
-|---|---|---|
-| LLM | GPT-4o via LangChain | State-of-the-art reasoning; JSON output mode for reliable structured responses |
-| Embeddings | `text-embedding-3-small` | Cost-effective; 1536-dim; excellent semantic fidelity |
-| Vector store | FAISS (CPU) | Zero infra overhead; persisted to disk; fast local similarity search |
-| Text splitting | LangChain `RecursiveCharacterTextSplitter` | Respects sentence/paragraph boundaries; configurable overlap |
-| Chain composition | LangChain LCEL (`|` pipe operator) | Declarative, auto-traced by LangSmith |
-| PDF creation | ReportLab | Pure Python; full layout control |
-| PDF extraction | pypdf | Lightweight; page-by-page text extraction |
-| MD → PDF | xhtml2pdf | Pure Python HTML→PDF; no external binaries needed |
-| Observability | Python `logging` + LangSmith | Structured JSON log file + real-time LLM trace UI |
+```
+                    extract_text
+                         │
+              ┌──────────┴──────────┐
+          questions              text / both
+              │                      │
+    generate_questions         summarize_text
+    (direct LLM, no RAG)           │
+              │              ┌──────┴──────┐
+              │           text           both
+              │              │              │
+              │         format_output  generate_questions
+              │                    │
+              └────────────────────┤
+                                   │
+                            format_output
+                                   │
+                            convert_pdf (PDF)
+```
+
+---
+
+## Tech Stack
+
+| Layer | Technology |
+|-------|-----------|
+| **Frontend** | React 18, Vite, Tailwind CSS |
+| **Backend** | FastAPI (Python 3.11+), uvicorn |
+| **LLM** | Groq — `llama-3.3-70b-versatile` (primary), `llama-3.1-8b-instant` (fallback) |
+| **Vision/Audio** | Groq — `meta-llama/llama-4-scout-17b-16e-instruct`, `whisper-large-v3` |
+| **Orchestration** | LangGraph (typed state machine) |
+| **Response Cache** | Redis (primary) + in-memory LRU OrderedDict (fallback) |
+| **Job Persistence** | PostgreSQL (primary) + SQLite (fallback) |
+| **Rate Limiting** | Sliding-window (Redis-backed), token-bucket spike arrest |
+| **Security** | WAF patterns, SSRF blocking, HMAC identity, JWT |
+| **Observability** | LangSmith tracing, structured logging, per-stage metrics |
+| **Deployment** | Render (backend), Vercel (frontend) |
+
+---
+
+## Features
+
+### Core
+- **Three output modes**: Questions only, Summary only, Both combined
+- **Direct LLM generation** — no vector embeddings needed; Groq's 128K context window handles full documents
+- **Smart text truncation** — fits within Groq TPM limits automatically
+- **Styled PDF output** — xhtml2pdf with branded footer
+
+### Reliability
+- **LLM retry + fallback** — 3 attempts with exponential backoff; automatic provider switch
+- **Groq rate-limit awareness** — parses `retry_after` from 429 errors; skips daily-exhausted providers immediately
+- **30-second LLM call timeout** — `request_timeout=30` on ChatGroq prevents hanging
+- **5-minute per-job timeout** — worker thread wraps each job with hard cap
+- **Startup cleanup** — marks any queued/processing jobs from previous crashes as `failed`
+- **Lazy imports** — all heavy LangChain/Groq imports inside function bodies (prevents Windows thread hang)
+
+### Caching
+- **Two-layer cache**: Redis (persistent, cross-restart) + in-memory LRU (ephemeral, same session)
+- **Content-hash key**: `sha256(file_bytes | output_mode | num_questions)` — same document always hits cache
+- **24-hour TTL** on Redis; up to 100 entries in memory fallback
+- **Cache hit dashboard**: purple row highlight + ⚡ icon
+
+### Security
+- **WAF**: XSS, SQLi, path traversal, RCE, file:// scheme blocking
+- **SSRF**: Private IP range blocking (127.x, 10.x, 192.168.x, 169.254.x)
+- **Rate limiting**: 10 req/hr per identity (sliding window, Redis-backed)
+- **Spike arrest**: 3 req/s token bucket
+- **Identity**: JWT > device fingerprint > IP/24 subnet, HMAC-hashed
+- **Body size limit**: 50 MB max
+
+### Dashboard
+- Real-time stats: Total / Completed / Failed / Pending / Cache Hits / Avg Duration
+- Jobs by output mode (bar chart with percentages)
+- Recent 20 jobs table with status badges, cache badge, duration, and **Reason/Stage** column
+- Cache status banner (Redis connected / memory-only)
+- Auto-refresh every 30 seconds
+
+---
+
+## Quick Start — Local Development
+
+### Prerequisites
+- Python 3.11+
+- Node.js 18+
+- PostgreSQL (optional — falls back to SQLite)
+- Groq API key ([console.groq.com](https://console.groq.com))
+
+### 1. Clone & install
+
+```bash
+git clone https://github.com/mailtopprakash05/AgenticAI-Usecases.git
+cd AgenticAI-Usecases/Q&A_Agent
+pip install -r requirements.txt
+cd frontend && npm install && cd ..
+```
+
+### 2. Configure environment
+
+```bash
+cp .env.example .env
+# Edit .env and set GROQ_API_KEY
+```
+
+### 3. Run backend
+
+```bash
+uvicorn api.server:app --reload --port 8000
+```
+
+The server starts in ~2 seconds (no model pre-loading). On first request, LangChain/Groq libraries load lazily (~5s).
+
+### 4. Run frontend (Windows — use node directly to avoid & escaping)
+
+```bash
+cd frontend
+node node_modules/vite/bin/vite.js --port 3000
+```
+
+### 5. Open browser
+
+- **App**: http://localhost:3000
+- **API docs**: http://localhost:8000/docs
+- **Dashboard**: click the **Dashboard** tab in the app
+
+---
+
+## Configuration Reference
+
+All settings are in `.env` (copied from `.env.example`):
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `GROQ_API_KEY` | *(required)* | Groq API key |
+| `GROQ_MODEL` | `llama-3.3-70b-versatile` | Primary LLM |
+| `GROQ_FALLBACK_MODEL` | `llama-3.1-8b-instant` | Fallback LLM |
+| `GROQ_VISION_MODEL` | `meta-llama/llama-4-scout-17b-16e-instruct` | Vision model for images |
+| `REDIS_URL` | *(empty — memory fallback)* | Redis URL for cache + rate limiting |
+| `CACHE_TTL` | `86400` | Response cache TTL in seconds (24h) |
+| `DATABASE_URL` | *(empty — SQLite fallback)* | PostgreSQL connection string |
+| `RATE_LIMIT_MAX` | `10` | Max requests per user per window |
+| `RATE_LIMIT_WINDOW` | `3600` | Rate limit window (seconds) |
+| `BURST_MAX` | `3` | Max burst requests per second |
+| `IDENTITY_HMAC_SECRET` | *(dev default)* | HMAC secret for identity hashing |
+| `CORS_ALLOWED_ORIGIN` | `*` | Allowed frontend origin |
+| `NUM_QUESTIONS` | `10` | Default number of questions |
+| `TEMPERATURE` | `0.3` | LLM sampling temperature |
+| `LANGCHAIN_TRACING_V2` | `false` | Enable LangSmith tracing |
+
+---
+
+## API Reference
+
+### Health
+```
+GET /health
+→ { status, version, timestamp, powered_by }
+```
+
+### Submit — File Upload
+```
+POST /api/qa/generate
+Content-Type: multipart/form-data
+  file:         <file>
+  output_mode:  "questions" | "text" | "both"
+  num_questions: int (default 10)
+
+→ { pipeline_id, status, queue_position }
+```
+
+### Submit — URL / Source
+```
+POST /api/qa/generate-source
+Content-Type: application/json
+{
+  "source":       "https://...",
+  "output_mode":  "questions" | "text" | "both",
+  "num_questions": 3
+}
+
+→ { pipeline_id, status, queue_position }
+```
+
+### Poll Status
+```
+GET /api/qa/status/{pipeline_id}
+→ { pipeline_id, status, output_mode, result_markdown, result_pdf_path,
+    error_message, created_at, updated_at, cached }
+```
+
+### Download PDF
+```
+GET /api/qa/download/{pipeline_id}
+→ application/pdf  (streamed)
+```
+
+### Dashboard
+```
+GET /api/dashboard/stats
+→ { total, completed, failed, pending, cache_hits, avg_duration_ms,
+    by_mode, stage_avg_ms }
+
+GET /api/dashboard/jobs?limit=20
+→ { jobs: [ { pipeline_id, status, output_mode, num_questions,
+               cached, duration_ms, reason, created_at } ] }
+
+GET /api/dashboard/cache-status
+→ { cache_enabled, redis_connected, cache_layers, cache_ttl_seconds }
+```
+
+---
+
+## Output Modes
+
+| Mode | What it generates | Use case |
+|------|------------------|----------|
+| `questions` | N multiple-choice questions with A/B/C/D options, correct answer, and explanation | Exam prep, self-testing |
+| `text` | Structured Markdown summary (Overview, Key Topics, Key Facts, Takeaways) | Quick document digest |
+| `both` | Summary first, then MCQ questions — combined PDF | Full study guide |
+
+---
+
+## Supported Input Types
+
+| Category | Extensions |
+|----------|-----------|
+| **Documents** | `.pdf` `.txt` `.md` `.rst` |
+| **Office** | `.docx` `.xlsx` `.xls` `.csv` |
+| **Images** | `.png` `.jpg` `.jpeg` `.webp` |
+| **Audio/Video** | `.mp3` `.wav` `.m4a` `.mp4` `.mov` `.avi` `.webm` `.mkv` |
+| **URLs** | `http://` `https://` (web pages) |
+| **YouTube** | `youtube.com` `youtu.be` (transcript extraction) |
+
+---
+
+## Security
+
+### Request Flow
+```
+Client → RequestId middleware
+       → BodySizeLimitMiddleware (50 MB cap)
+       → CORS
+       → extract_identity()  [JWT > fingerprint > IP/24 subnet, HMAC-hashed]
+       → check_spike_arrest() [token bucket: 3 req/s]
+       → check_rate_limit()  [sliding window: 10 req/hr]
+       → waf_scan()          [XSS, SQLi, path traversal, RCE, file://]
+       → validate_url()      [SSRF: blocks 127.x, 10.x, 192.168.x, 169.254.x]
+       → pipeline
+```
+
+### Structured Error Codes
+
+| Code | HTTP | When |
+|------|------|------|
+| `RATE_LIMIT_EXCEEDED` | 429 | Hourly quota hit |
+| `SPIKE_ARREST` | 429 | Burst limit hit |
+| `WAF_BLOCKED` | 400 | Injection pattern detected |
+| `SSRF_BLOCKED` | 400 | Private IP target |
+| `UNSUPPORTED_FILE_TYPE` | 415 | Extension not allowed |
+| `INVALID_OUTPUT_MODE` | 422 | Unknown mode string |
+
+All errors return `{ error_code, message, retry_after_seconds, debug_id }`.
+
+---
+
+## Dashboard & Observability
+
+The built-in dashboard (click **Dashboard** tab) shows:
+
+- **Summary cards**: Total Jobs · Completed · Failed · Pending · Cache Hits · Avg Duration
+- **Mode breakdown**: Bar chart of questions / text / both usage
+- **Stage timings**: Average duration per pipeline stage (from PostgreSQL)
+- **Recent jobs table** with:
+  - Status badge (queued / processing / completed / failed)
+  - Cache badge (cached ⚡ purple / fresh)
+  - Duration — computed timezone-safely in Python
+  - **Reason/Stage column** — human-readable explanation:
+    - 🟢 `Pipeline completed`
+    - 🟣 `Served from cache`
+    - 🔵 `Running pipeline…` (animated)
+    - 🟡 `Waiting in queue`
+    - 🔴 `Groq API rate limit — retry later`
+    - 🔴 `Server restarted mid-job`
+- **Cache status banner**: Redis connected / memory-only
+
+---
+
+## Caching & Performance
+
+### Cache Architecture
+```
+Request
+  │
+  ▼
+make_cache_key(sha256(file_bytes | mode | num_questions))
+  │
+  ├─► Redis GET  →  HIT: return cached PDF (skip entire pipeline)
+  │                 MISS ↓
+  ├─► Memory LRU GET  →  HIT: return cached result
+  │                       MISS ↓
+  ▼
+Run full pipeline → store in Redis + Memory LRU
+```
+
+### Expected Latencies
+
+| Scenario | Latency |
+|----------|---------|
+| Redis cache hit | < 2s (PDF generation only) |
+| Memory cache hit | < 5s (within same session) |
+| Fresh pipeline — small doc | 10–30s |
+| Fresh pipeline — large URL | 20–60s |
+| Groq per-minute rate limit | +10–30s (auto-retry) |
+
+---
+
+## Deployment — Render + Vercel
+
+### Backend — Render
+
+1. Connect your GitHub repo to Render
+2. Use `render.yaml` — it configures the web service automatically
+3. Set secrets in Render dashboard (Environment tab):
+   - `GROQ_API_KEY` — your Groq key
+   - `DATABASE_URL` — PostgreSQL connection string
+   - `IDENTITY_HMAC_SECRET` — strong random secret (32+ chars)
+4. Redis is pre-configured in `render.yaml` pointing to your Render Redis instance
+
+### Frontend — Vercel
+
+1. Import the `frontend/` directory as a Vercel project
+2. Set `VITE_API_BASE_URL` env var to your Render backend URL
+3. `vercel.json` handles rewrites and security headers automatically
+
+### Environment Variables Summary (Render)
+
+```yaml
+GROQ_API_KEY:          <secret>
+GROQ_MODEL:            llama-3.3-70b-versatile
+GROQ_FALLBACK_MODEL:   llama-3.1-8b-instant
+REDIS_URL:             redis://red-d836e2t7vvec73938sl0:6379
+DATABASE_URL:          <postgres connection string>
+IDENTITY_HMAC_SECRET:  <secret>
+CORS_ALLOWED_ORIGIN:   https://your-app.vercel.app
+RATE_LIMIT_MAX:        10
+BURST_MAX:             3
+NUM_QUESTIONS:         10
+```
 
 ---
 
@@ -70,428 +445,62 @@ An automated pipeline that ingests a PDF document, builds a semantic vector inde
 
 ```
 Q&A_Agent/
-│
-├── main.py                    # Entry point — orchestrates all 7 stages
-├── config.py                  # All settings (env vars + defaults)
-├── requirements.txt           # Python dependencies
-├── .env                       # Your secrets (gitignored)
-├── .env.example               # Template for new contributors
-├── .gitignore
+├── api/
+│   ├── server.py           # FastAPI app, worker, all endpoints
+│   ├── cache.py            # Two-layer cache (Redis + in-memory LRU)
+│   ├── database.py         # PostgreSQL + SQLite persistence
+│   ├── errors.py           # Structured error factory
+│   └── middleware/
+│       ├── security.py     # WAF, SSRF, file validation
+│       ├── rate_limit.py   # Sliding-window + spike arrest
+│       ├── request_id.py   # X-Request-Id header
+│       └── body_size.py    # 50 MB body cap
 │
 ├── src/
-│   ├── ingestion/
-│   │   ├── pdf_generator.py   # Stage 1 — creates sample PDF with ReportLab
-│   │   └── pdf_extractor.py   # Stage 2 — extracts + cleans text from PDF
-│   │
-│   ├── retrieval/
-│   │   └── embeddings_store.py # Stages 3–4 — chunks text, embeds, builds FAISS
-│   │
+│   ├── pipeline/
+│   │   ├── graph.py        # LangGraph state machine
+│   │   └── stages.py       # Stage wrappers (extract, summarize, format, pdf)
 │   ├── generation/
-│   │   └── qa_generator.py    # Stage 5 — retrieves context + calls GPT-4o
-│   │
+│   │   └── qa_generator.py # LLM calls: generate_questions_from_text, summarize_text
+│   ├── ingestion/
+│   │   ├── document_loader.py  # Universal loader (PDF, DOCX, XLSX, URL, YouTube)
+│   │   ├── pdf_extractor.py    # PDF text cleaning
+│   │   └── pdf_generator.py    # Sample PDF creator
 │   ├── output/
-│   │   ├── output_formatter.py # Stage 6 — renders questions as Markdown
-│   │   └── pdf_converter.py   # Stage 7 — converts Markdown → styled PDF
-│   │
-│   └── pipeline/
-│       └── stages.py          # Thin wrappers: adds metrics + @traceable to each stage
+│   │   ├── output_formatter.py # Markdown templates
+│   │   └── pdf_converter.py    # Markdown → HTML → PDF
+│   └── retrieval/
+│       └── embeddings_store.py # FAISS + HuggingFace (available for future RAG)
+│
+├── frontend/
+│   ├── src/
+│   │   ├── App.jsx                  # Tab navigation (Pipeline / Dashboard)
+│   │   ├── components/
+│   │   │   ├── DocumentUpload.jsx   # File/URL input, rate limit banner
+│   │   │   ├── JobStatus.jsx        # Poll + display results
+│   │   │   ├── Dashboard.jsx        # Stats + jobs table with reason column
+│   │   │   └── RateLimitBanner.jsx  # 429 countdown
+│   │   └── utils/
+│   │       └── errorHandler.js      # parseApiError, getDeviceFingerprint
+│   └── vercel.json                  # Rewrites + security headers
+│
+├── tests/                 # 65 passing tests
+│   ├── test_api_endpoints.py
+│   ├── test_rate_limit.py
+│   ├── test_security.py
+│   └── test_llm_retry.py
 │
 ├── observability/
-│   ├── logger.py              # Structured logging (console + JSON Lines file)
-│   ├── metrics.py             # Per-stage timing + metadata (PipelineMetrics)
-│   └── langsmith_tracer.py    # LangSmith initialisation + connectivity check
+│   ├── logger.py          # Structured logging (UTF-8, file + console)
+│   ├── metrics.py         # PipelineMetrics with stage timings
+│   └── langsmith_tracer.py
 │
-├── data/
-│   ├── sample_document.pdf    # Auto-generated source PDF (gitignored)
-│   └── faiss_index/           # Persisted FAISS index files (gitignored)
-│
-└── output/
-    ├── qa_output.md           # Generated Q&A in Markdown (gitignored)
-    ├── qa_output.pdf          # Generated Q&A as PDF (gitignored)
-    └── pipeline_metrics.json  # Per-stage timing report (gitignored)
+├── config.py              # Central config (all env vars, defaults)
+├── render.yaml            # Render deployment spec
+├── requirements.txt
+└── .env.example
 ```
 
 ---
 
-## How It Works — Step by Step
-
-### Stage 1 — Generate Sample PDF
-
-**File:** `src/ingestion/pdf_generator.py`
-
-ReportLab creates a multi-page PDF on the topic of **Cloud Computing** (covering IaaS/PaaS/SaaS, deployment models, security, cost optimisation, etc.). This acts as the source document for the pipeline.
-
-- Skipped automatically if `data/sample_document.pdf` already exists.
-- In production you would swap this for any real PDF.
-
----
-
-### Stage 2 — Extract & Clean Text
-
-**File:** `src/ingestion/pdf_extractor.py`
-
-pypdf reads the PDF page by page and concatenates the raw text. A cleaning pass normalises whitespace and removes artefacts (ligatures, control characters) that confuse the tokeniser.
-
-```
-PDF (binary) ──pypdf──▶ raw text (per page) ──clean──▶ clean string
-                         "16529 chars"                  "16521 chars"
-```
-
----
-
-### Stage 3 — Split Text into Chunks
-
-**File:** `src/retrieval/embeddings_store.py` → `split_text()`
-
-LangChain's `RecursiveCharacterTextSplitter` divides the cleaned text into overlapping chunks:
-
-```
-clean text (16 521 chars)
-       │
-       ▼  chunk_size=1000, overlap=200
-  [ chunk_0 ][ chunk_1 ][ chunk_2 ] … [ chunk_23 ]
-       │───200 chars overlap───│
-```
-
-- Each chunk becomes a `Document` object carrying the text + optional metadata.
-- Overlap ensures a sentence that falls near a boundary appears in both adjacent chunks, so the retriever can always find full context.
-
----
-
-### Stage 4 — Embed Chunks & Build FAISS Index
-
-**File:** `src/retrieval/embeddings_store.py` → `build_vector_store()`
-
-Each of the 24 chunks is converted to a **1536-dimensional vector** by OpenAI's `text-embedding-3-small` model. FAISS indexes these vectors for fast approximate nearest-neighbour search.
-
-```
-chunk_0 (text) ──OpenAI API──▶ [0.02, -0.15, 0.83, … ] (1536 floats)
-chunk_1 (text) ──OpenAI API──▶ [0.11,  0.04, 0.61, … ]
-       …
-chunk_23                      ▶ [ … ]
-                                      │
-                              FAISS.from_documents()
-                                      │
-                              index saved to data/faiss_index/
-```
-
-The index is persisted to disk so subsequent runs can skip re-embedding (if you choose to add that optimisation).
-
----
-
-### Stage 5 — Retrieve Context & Generate Questions
-
-**File:** `src/generation/qa_generator.py`
-
-This is the core RAG (Retrieval-Augmented Generation) stage. It has two sub-steps:
-
-#### 5a. Multi-Query Retrieval
-
-8 topic-specific queries are run against the FAISS index (e.g., "Cloud deployment models", "Cloud security and compliance"). Each query returns the top-K most similar chunks. Duplicates are removed, yielding ~24 unique context chunks.
-
-```
-query_1: "Cloud service models IaaS PaaS SaaS"
-              │
-              ▼  FAISS similarity search (top-15)
-         [chunk_3, chunk_7, chunk_12, …]
-query_2: "Cloud security compliance"
-              │
-              ▼
-         [chunk_1, chunk_5, chunk_9, …]
-              …
-         ──────────────────────────────
-         deduplicate → 24 unique chunks
-```
-
-#### 5b. LLM Generation (LCEL Chain)
-
-All context chunks are concatenated and passed to GPT-4o via a LangChain LCEL chain:
-
-```
-ChatPromptTemplate
-       │  (system prompt: "generate {n} MCQs as JSON…")
-       │  (human: context + instructions)
-       ▼
-  ChatOpenAI (gpt-4o, temperature=0.3)
-       │
-       ▼
-  StrOutputParser
-       │
-       ▼
-  JSON parse + validate
-       │
-       ▼
-  list of 10 QuestionDicts:
-  {
-    "question": "What does IaaS stand for?",
-    "options": {"A": "…", "B": "…", "C": "…", "D": "…"},
-    "correct_answer": "B",
-    "explanation": "IaaS stands for …"
-  }
-```
-
----
-
-### Stage 6 — Format as Markdown
-
-**File:** `src/output/output_formatter.py`
-
-The validated question list is rendered into a structured Markdown document:
-
-```markdown
-# Q&A: Cloud Computing Fundamentals
-
-## Question 1
-**What does IaaS stand for?**
-
-- A) Internet as a Service
-- B) Infrastructure as a Service  ✓
-- C) Integration as a Service
-- D) Intelligence as a Service
-
-**Explanation:** IaaS stands for Infrastructure as a Service …
-```
-
-Saved to `output/qa_output.md`.
-
----
-
-### Stage 7 — Convert Markdown to PDF
-
-**File:** `src/output/pdf_converter.py`
-
-A two-pass conversion:
-
-```
-qa_output.md
-     │
-     ▼  markdown library
-  HTML string (with CSS styling)
-     │
-     ▼  xhtml2pdf (pisa)
-  qa_output.pdf
-```
-
-The CSS applies fonts, colours, spacing, and page margins so the PDF is readable and professionally formatted.
-
----
-
-## Setup & Installation
-
-### Prerequisites
-
-- Python 3.12+
-- An [OpenAI API key](https://platform.openai.com/api-keys) (GPT-4o access required)
-- *(Optional)* A [LangSmith API key](https://smith.langchain.com) for tracing
-
-### 1. Clone the repository
-
-```bash
-git clone <repo-url>
-cd Q&A_Agent
-```
-
-### 2. Create a virtual environment
-
-```bash
-python -m venv .venv
-# Windows
-.venv\Scripts\activate
-# macOS/Linux
-source .venv/bin/activate
-```
-
-### 3. Install dependencies
-
-```bash
-pip install -r requirements.txt
-```
-
-### 4. Configure environment variables
-
-```bash
-copy .env.example .env      # Windows
-# cp .env.example .env      # macOS/Linux
-```
-
-Edit `.env`:
-
-```env
-# Required
-OPENAI_API_KEY=sk-...
-
-# Optional overrides (defaults shown)
-OPENAI_MODEL=gpt-4o
-OPENAI_EMBEDDING_MODEL=text-embedding-3-small
-NUM_QUESTIONS=10
-CHUNK_SIZE=1000
-CHUNK_OVERLAP=200
-TOP_K_RETRIEVAL=15
-TEMPERATURE=0.3
-
-# LangSmith tracing (optional)
-LANGCHAIN_TRACING_V2=true
-LANGCHAIN_API_KEY=lsv2_pt_...
-LANGCHAIN_PROJECT=qa-agent
-```
-
----
-
-## Configuration Reference
-
-| Variable | Default | Description |
-|---|---|---|
-| `OPENAI_API_KEY` | *(required)* | OpenAI secret key |
-| `OPENAI_MODEL` | `gpt-4o` | Chat model for Q&A generation |
-| `OPENAI_EMBEDDING_MODEL` | `text-embedding-3-small` | Embedding model for FAISS |
-| `NUM_QUESTIONS` | `10` | Number of MCQs to generate |
-| `CHUNK_SIZE` | `1000` | Max characters per text chunk |
-| `CHUNK_OVERLAP` | `200` | Overlapping characters between chunks |
-| `TOP_K_RETRIEVAL` | `15` | Chunks returned per similarity query |
-| `TEMPERATURE` | `0.3` | LLM sampling temperature (0 = deterministic) |
-| `LOG_LEVEL` | `INFO` | Console log verbosity (`DEBUG`/`INFO`/`WARNING`) |
-| `LOG_TO_FILE` | `true` | Enable rotating JSON log file |
-| `LANGCHAIN_TRACING_V2` | `false` | Enable LangSmith tracing |
-| `LANGCHAIN_API_KEY` | *(empty)* | LangSmith API key |
-| `LANGCHAIN_PROJECT` | `qa-agent` | LangSmith project name |
-
----
-
-## Running the Pipeline
-
-```bash
-python main.py
-```
-
-Expected output (≈ 20–30 seconds):
-
-```
-12:41:33  INFO  LangSmith tracing ENABLED  project='qa-agent'
-12:41:49  INFO  Pipeline 2a3a3614 starting — model=gpt-4o  questions=10
-12:41:49  INFO  [1/7] Sample PDF already exists, skipping
-12:41:49  INFO  [2/7] Extracting and cleaning text from PDF …
-12:41:49  INFO        ✓ Extracted 16521 characters
-12:41:49  INFO  [3/7] Splitting text into chunks …
-12:41:49  INFO        ✓ 24 chunks created
-12:41:52  INFO  [4/7] Building FAISS vector store …
-12:41:52  INFO        ✓ FAISS index built and saved
-12:41:52  INFO  [5/7] Generating 10 questions with gpt-4o …
-12:42:08  INFO        ✓ 10 questions generated
-12:42:08  INFO  [6/7] Formatting questions as Markdown …
-12:42:08  INFO  [7/7] Converting Markdown → PDF …
-12:42:10  INFO  Pipeline 2a3a3614 — COMPLETE
-
-────────────────────────────────────────────────
-  Stage                    Status     Duration
-────────────────────────────────────────────────
-  generate_sample_pdf      success      0.00s
-  extract_text             success      0.04s
-  split_text               success      0.00s
-  build_vector_store       success      3.13s
-  generate_questions       success     16.38s
-  format_markdown          success      0.00s
-  convert_to_pdf           success      1.16s
-────────────────────────────────────────────────
-  Total: 20.9 s
-```
-
-### Exit codes
-
-| Code | Meaning |
-|---|---|
-| `0` | Pipeline completed successfully |
-| `1` | Configuration error (missing API key, bad env var) |
-| `2` | Runtime error (API failure, file not found) |
-
----
-
-## Outputs
-
-| File | Description |
-|---|---|
-| `output/qa_output.md` | 10 MCQs with options, correct answer, and explanation in Markdown |
-| `output/qa_output.pdf` | Styled PDF version of the Markdown |
-| `output/pipeline_metrics.json` | Machine-readable per-stage timing and metadata |
-| `logs/qa_agent.log` | Rotating structured log (JSON Lines format) |
-
----
-
-## Observability
-
-### Structured Logging
-
-Every log line is emitted to two sinks simultaneously:
-
-- **Console** — human-readable with ANSI colours and aligned columns
-- **`logs/qa_agent.log`** — JSON Lines format, one JSON object per line, for log aggregation tools
-
-```json
-{"ts":"2026-05-10T12:42:08+00:00","level":"INFO","logger":"src.generation.qa_generator",
- "message":"Generated and validated 10 questions.","module":"qa_generator","line":290}
-```
-
-### Pipeline Metrics
-
-`output/pipeline_metrics.json` is written after every run:
-
-```json
-{
-  "pipeline_id": "2a3a3614",
-  "status": "success",
-  "total_duration_s": 20.9,
-  "stages": {
-    "build_vector_store": {
-      "status": "success",
-      "duration_s": 3.13,
-      "metadata": {
-        "chunk_count": 24,
-        "embedding_model": "text-embedding-3-small",
-        "index_path": "data/faiss_index"
-      }
-    }
-  }
-}
-```
-
----
-
-## LangSmith Tracing
-
-When `LANGCHAIN_TRACING_V2=true`, every pipeline run is captured in the [LangSmith UI](https://smith.langchain.com) under the **qa-agent** project.
-
-### What is traced
-
-```
-Q&A Pipeline [2a3a3614]          ← parent run (main.py)
-├── stage_generate_pdf           ← @traceable  tag: ingestion
-├── stage_extract_text           ← @traceable  tag: ingestion
-├── stage_split_text             ← @traceable  tag: ingestion
-├── stage_build_vector_store     ← @traceable  tag: retrieval
-├── stage_generate_questions     ← @traceable  tag: generation, llm
-│   ├── generate_questions       ← @traceable  tag: qa-generation, llm
-│   └── ChatOpenAI               ← auto-traced by LCEL
-│       ├── ChatPromptTemplate   ← auto-traced
-│       └── StrOutputParser      ← auto-traced
-├── stage_format_markdown        ← @traceable  tag: output
-└── stage_convert_to_pdf         ← @traceable  tag: output
-```
-
-### Per-run metadata visible in LangSmith
-
-- `pipeline_id` — unique 8-char run ID for correlation with local logs
-- `model` — e.g. `gpt-4o`
-- `num_questions` — e.g. `10`
-- Full prompt sent to GPT-4o
-- Full LLM response
-- Token usage (prompt tokens, completion tokens, total)
-- Per-call latency
-
-### Enabling tracing
-
-```env
-LANGCHAIN_TRACING_V2=true
-LANGCHAIN_API_KEY=lsv2_pt_...
-LANGCHAIN_PROJECT=qa-agent
-```
-
-When disabled (default), `contextlib.nullcontext()` is used — zero performance overhead.
+*Powered by PrakashPujariAI*

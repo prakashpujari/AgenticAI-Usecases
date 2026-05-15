@@ -241,8 +241,8 @@ class PipelineMetrics:
         # Snapshot the key configuration values so the report is self-contained.
         # We include only the parameters that directly affect output quality/cost.
         self._pipeline_metadata["configuration"] = {
-            "openai_model":       config.OPENAI_MODEL,
-            "embedding_model":    config.OPENAI_EMBEDDING_MODEL,
+            "groq_model":         config.GROQ_MODEL,
+            "embedding_model":    config.EMBEDDING_MODEL,
             "chunk_size":         config.CHUNK_SIZE,
             "chunk_overlap":      config.CHUNK_OVERLAP,
             "num_questions":      config.NUM_QUESTIONS,

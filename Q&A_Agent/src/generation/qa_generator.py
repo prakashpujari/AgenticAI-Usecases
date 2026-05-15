@@ -54,20 +54,179 @@ Public API
     generate_questions(vector_store, num_questions) → list[QuestionDict]
 """
 
+from __future__ import annotations   # make all type annotations lazy strings
+
 import json
 import re
+import time
+from dataclasses import dataclass
 from typing import Any
 
-from langchain_community.vectorstores import FAISS
-from langchain_core.output_parsers import StrOutputParser
-from langchain_core.prompts import ChatPromptTemplate
-from langchain_openai import ChatOpenAI
-from langsmith import traceable
+# Heavy LangChain / Groq imports are done LAZILY inside functions so that
+# importing this module in a background worker thread does NOT trigger
+# sentence-transformers or other slow library initialisation.
+#
+# Rule: stdlib only at module level; third-party inside def bodies.
+
+def _parse_retry_after(exc: Exception) -> float | None:
+    m = re.search(r"try again in (?:(\d+)m)?(\d+(?:\.\d+)?)s", str(exc))
+    if m:
+        return int(m.group(1) or 0) * 60 + float(m.group(2))
+    return None
+
+
+def _traceable(*args, **kwargs):
+    """No-op replacement for @langsmith.traceable when tracing is disabled."""
+    def decorator(fn):
+        return fn
+    if len(args) == 1 and callable(args[0]):
+        return args[0]   # @_traceable without arguments
+    return decorator
+
+
+import os as _os
+if _os.getenv("LANGCHAIN_TRACING_V2", "false").lower() in ("true", "1"):
+    try:
+        from langsmith import traceable
+    except Exception:
+        traceable = _traceable
+else:
+    traceable = _traceable
 
 import config
 from observability.logger import get_logger
 
 logger = get_logger(__name__)
+
+# ─── LLM retry + fallback ─────────────────────────────────────────────────────
+
+_RETRYABLE_SIGNALS = (
+    "rate_limit", "timeout", "503", "502", "500",
+    "overloaded", "connection", "too many requests", "429",
+)
+
+
+def _is_retryable(exc: Exception) -> bool:
+    msg = f"{type(exc).__name__} {exc}".lower()
+    return any(sig in msg for sig in _RETRYABLE_SIGNALS)
+
+
+@dataclass
+class LLMCallResult:
+    content: str
+    provider: str
+    model: str
+    attempts: int
+    total_latency_ms: float
+
+
+def _build_llm(model: str):
+    from langchain_groq import ChatGroq   # lazy — avoids worker-thread hang
+    return ChatGroq(
+        model=model,
+        api_key=config.GROQ_API_KEY,
+        temperature=config.TEMPERATURE,
+        max_retries=0,      # retries managed by call_llm_with_retry
+        request_timeout=30, # hard 30-second timeout per API call; prevents infinite hang
+    )
+
+
+def call_llm_with_retry(
+    chain_input: dict,
+    prompt,               # ChatPromptTemplate — type hint omitted to avoid import
+    request_id: str = "unknown",
+    max_attempts: int = 3,
+    base_delay: float = 1.0,
+) -> LLMCallResult:
+    """
+    Invoke the LLM chain with exponential-backoff retry and provider fallback.
+
+    Attempt order:
+      1. Primary model (GROQ_MODEL)         — up to max_attempts times
+      2. Fallback model (GROQ_FALLBACK_MODEL) — up to max_attempts times
+
+    Only retries on transient errors (timeouts, 5xx, rate limits).
+    Non-retryable errors (bad request, auth) switch providers immediately.
+    """
+    providers = [
+        ("groq-primary",  config.GROQ_MODEL),
+        ("groq-fallback", config.GROQ_FALLBACK_MODEL),
+    ]
+    t_start = time.monotonic()
+
+    for provider_name, model_name in providers:
+        from langchain_core.output_parsers import StrOutputParser  # lazy
+        llm   = _build_llm(model_name)
+        chain = prompt | llm | StrOutputParser()
+
+        for attempt in range(1, max_attempts + 1):
+            try:
+                content = chain.invoke(chain_input)
+                latency = (time.monotonic() - t_start) * 1000
+                logger.info(
+                    "LLM call succeeded",
+                    extra={
+                        "request_id": request_id,
+                        "provider":   provider_name,
+                        "model":      model_name,
+                        "attempt":    attempt,
+                        "latency_ms": round(latency, 1),
+                    },
+                )
+                return LLMCallResult(
+                    content=content,
+                    provider=provider_name,
+                    model=model_name,
+                    attempts=attempt,
+                    total_latency_ms=round(latency, 1),
+                )
+
+            except Exception as exc:
+                retryable = _is_retryable(exc)
+                # Log the full error so it's visible in plain-text logs
+                logger.warning(
+                    "LLM attempt failed [%s/%d] provider=%s error=%s",
+                    attempt, max_attempts, provider_name, str(exc)[:400],
+                    extra={
+                        "request_id": request_id,
+                        "provider":   provider_name,
+                        "model":      model_name,
+                        "attempt":    attempt,
+                        "error_type": type(exc).__name__,
+                        "retryable":  retryable,
+                    },
+                )
+                if not retryable:
+                    break  # switch to next provider immediately
+
+                retry_after = _parse_retry_after(exc)
+                if retry_after is not None and retry_after > 30:
+                    # Daily limit exhausted — waiting 14+ minutes is not viable.
+                    # Fail fast and let the caller switch to the fallback model.
+                    logger.warning(
+                        "Daily token limit hit on %s (retry in %.0fs) — switching provider",
+                        provider_name, retry_after,
+                    )
+                    break
+
+                # Per-minute rate limit: wait the suggested time (capped at 30 s).
+                wait = retry_after if retry_after else base_delay * (2 ** (attempt - 1))
+                wait = min(wait + 1, 30)   # +1 s buffer; max 30 s
+                if attempt < max_attempts:
+                    logger.info("Rate-limited — waiting %.1f s before retry", wait)
+                    time.sleep(wait)
+
+        logger.error(
+            "Provider exhausted, switching to fallback",
+            extra={"request_id": request_id, "failed_provider": provider_name},
+        )
+
+    latency = (time.monotonic() - t_start) * 1000
+    raise RuntimeError(
+        f"Groq API rate limit reached (daily or per-minute quota exhausted). "
+        f"Please wait a few minutes and try again. "
+        f"request_id={request_id} elapsed={latency:.0f}ms"
+    )
 
 # Type alias: a single Q&A dict as returned by the LLM and validated by us
 QuestionDict = dict[str, Any]
@@ -282,6 +441,7 @@ def _validate_question(q: QuestionDict, idx: int) -> QuestionDict:
 def generate_questions(
     vector_store: FAISS,
     num_questions: int | None = None,
+    request_id: str = "unknown",
 ) -> list[QuestionDict]:
     """
     Generates original MCQ questions from the document vector store.
@@ -317,13 +477,12 @@ def generate_questions(
         Validated list of QuestionDict objects.
 
     Raises:
-        EnvironmentError: If OPENAI_API_KEY is not configured.
+        EnvironmentError: If GROQ_API_KEY is not configured.
         ValueError:       If the vector store is empty or LLM returns bad JSON.
-        openai.APIError:  On API communication failure.
     """
-    if not config.OPENAI_API_KEY:
+    if not config.GROQ_API_KEY:
         raise EnvironmentError(
-            "OPENAI_API_KEY is not set. Add it to a .env file at the project root."
+            "GROQ_API_KEY is not set. Add it to a .env file at the project root."
         )
 
     num_questions = num_questions or config.NUM_QUESTIONS
@@ -368,7 +527,7 @@ def generate_questions(
         extra={
             "unique_chunks":  len(unique_docs),
             "query_count":    len(broad_queries),
-            "embedding_model": config.OPENAI_EMBEDDING_MODEL,
+            "embedding_model": config.EMBEDDING_MODEL,
         },
     )
 
@@ -380,55 +539,40 @@ def generate_questions(
 
     context = _build_context_from_docs(unique_docs)
 
-    # ── Step 2: Build the LCEL chain ─────────────────────────────────────────
-    # ChatOpenAI wraps the OpenAI chat completion endpoint.
-    # max_retries=3: automatically retries on transient HTTP errors (429, 5xx)
-    # temperature=0.3: low randomness → consistent, factual answers
-    llm = ChatOpenAI(
-        model=config.OPENAI_MODEL,
-        api_key=config.OPENAI_API_KEY,
-        temperature=config.TEMPERATURE,
-        max_retries=3,
-    )
-
-    # Two-message prompt: system (rules) + human (task + context)
+    # ── Step 2: Build prompt ──────────────────────────────────────────────────
+    from langchain_core.prompts import ChatPromptTemplate  # lazy
     prompt = ChatPromptTemplate.from_messages([
         ("system", SYSTEM_PROMPT),
         ("human",  HUMAN_PROMPT),
     ])
 
-    # LCEL pipe: prompt → LLM → string extractor
-    # StrOutputParser converts AIMessage.content to a plain Python str.
-    chain = prompt | llm | StrOutputParser()
-
-    # ── Step 3: Invoke the chain ──────────────────────────────────────────────
+    # ── Step 3: Invoke with retry + fallback ──────────────────────────────────
     logger.info(
-        "Invoking '%s' to generate %d questions (context: %d chars) …",
-        config.OPENAI_MODEL,
-        num_questions,
-        len(context),
+        "Invoking LLM to generate %d questions (context: %d chars) …",
+        num_questions, len(context),
+        extra={"num_questions": num_questions, "context_len": len(context)},
+    )
+    result = call_llm_with_retry(
+        chain_input={"num_questions": num_questions, "context": context},
+        prompt=prompt,
+        request_id=request_id,
+    )
+    raw_response = result.content
+
+    logger.info(
+        "LLM response received",
         extra={
-            "model":         config.OPENAI_MODEL,
-            "num_questions": num_questions,
-            "context_len":   len(context),
+            "provider":   result.provider,
+            "model":      result.model,
+            "attempts":   result.attempts,
+            "latency_ms": result.total_latency_ms,
+            "response_len": len(raw_response),
         },
     )
 
-    raw_response: str = chain.invoke({
-        "num_questions": num_questions,
-        "context":       context,
-    })
-
-    logger.debug(
-        "Raw LLM response (%d chars, first 500 shown):\n%s",
-        len(raw_response),
-        raw_response[:500],
-        extra={"response_len": len(raw_response)},
-    )
-
     # ── Step 4: Parse + validate ──────────────────────────────────────────────
-    questions  = _parse_json_response(raw_response)
-    validated  = [_validate_question(q, i) for i, q in enumerate(questions)]
+    questions = _parse_json_response(raw_response)
+    validated = [_validate_question(q, i) for i, q in enumerate(questions)]
 
     logger.info(
         "Generated and validated %d questions.",
@@ -436,3 +580,139 @@ def generate_questions(
         extra={"question_count": len(validated)},
     )
     return validated
+
+
+# ─── Text summarisation ────────────────────────────────────────────────────────
+
+_SUMMARISE_SYSTEM = """You are a document analysis assistant. Analyse the provided document text and produce a well-structured summary with these sections:
+
+## Overview
+A 2–3 sentence description of what the document covers.
+
+## Key Topics
+Bullet list of the main topics / sections covered.
+
+## Key Facts & Details
+The most important facts, data points, and details from the document.
+
+## Key Takeaways
+3–5 concise points a reader should remember.
+
+Format your response in clean Markdown. Be comprehensive but concise."""
+
+_SUMMARISE_HUMAN = "Analyse and structure the following document text:\n\n{text}"
+
+
+# ─── Direct text → questions (no vector store / embeddings needed) ─────────────
+
+_QA_DIRECT_SYSTEM = """You are an expert educator who creates rigorous multiple-choice exam questions.
+
+Given the document text below, generate exactly {num_questions} multiple-choice question(s).
+
+Return ONLY a valid JSON array. Each element must follow this exact schema:
+{{
+  "question_number": <int>,
+  "question": "<question text>",
+  "choices": {{"A": "<text>", "B": "<text>", "C": "<text>", "D": "<text>"}},
+  "correct_answer": "<A|B|C|D>",
+  "explanation": "<brief explanation>"
+}}
+
+Rules:
+- Questions must be answerable from the provided text
+- Each question must have exactly 4 choices (A-D) with exactly one correct answer
+- Vary difficulty across the question set
+- Do not add any text outside the JSON array"""
+
+_QA_DIRECT_HUMAN = "Document text:\n\n{text}\n\nGenerate {num_questions} MCQ question(s)."
+
+
+@traceable(name="generate_questions_from_text", run_type="llm", tags=["generation", "llm"])
+def generate_questions_from_text(
+    text: str,
+    num_questions: int | None = None,
+    request_id: str = "unknown",
+) -> list[QuestionDict]:
+    """
+    Generate MCQ questions directly from raw text — no embeddings or vector store needed.
+
+    Uses the full Groq context window (up to 80 000 chars of text).
+    Falls back gracefully through retry + model fallback logic.
+    """
+    if not config.GROQ_API_KEY:
+        raise EnvironmentError("GROQ_API_KEY is not set.")
+
+    num_questions = num_questions or config.NUM_QUESTIONS
+    # Keep context under 8 000 chars (~2 000 tokens) so the prompt + response
+    # stays well within Groq's 6 000 TPM free-tier limit.
+    max_chars = 8_000
+    if len(text) > max_chars:
+        text = text[:max_chars] + "\n\n[… document truncated for question generation …]"
+
+    from langchain_core.prompts import ChatPromptTemplate  # lazy
+    prompt = ChatPromptTemplate.from_messages([
+        ("system", _QA_DIRECT_SYSTEM),
+        ("human",  _QA_DIRECT_HUMAN),
+    ])
+
+    result = call_llm_with_retry(
+        chain_input={"text": text, "num_questions": num_questions},
+        prompt=prompt,
+        request_id=request_id,
+    )
+
+    # Parse + validate JSON
+    raw = result.content.strip()
+    json_match = re.search(r"\[.*\]", raw, re.DOTALL)
+    if not json_match:
+        raise ValueError(f"LLM did not return a JSON array. Raw:\n{raw[:500]}")
+    questions: list[QuestionDict] = json.loads(json_match.group(0))
+
+    validated: list[QuestionDict] = []
+    for i, q in enumerate(questions, start=1):
+        validated.append({
+            "question_number": q.get("question_number", i),
+            "question":        str(q.get("question", "")),
+            "choices":         q.get("choices", {}),
+            "correct_answer":  str(q.get("correct_answer", "A")),
+            "explanation":     str(q.get("explanation", "")),
+        })
+
+    logger.info(
+        "generate_questions_from_text: %d questions via %s (%d attempts, %.0f ms)",
+        len(validated), result.model, result.attempts, result.total_latency_ms,
+    )
+    return validated
+
+
+@traceable(name="summarize_text", run_type="llm", tags=["generation", "llm"])
+def summarize_text(text: str, request_id: str = "unknown") -> str:
+    """Use the LLM to produce a structured Markdown summary of extracted document text."""
+    if not config.GROQ_API_KEY:
+        raise EnvironmentError(
+            "GROQ_API_KEY is not set. Add it to a .env file at the project root."
+        )
+
+    max_chars = 8_000
+    if len(text) > max_chars:
+        text = text[:max_chars] + "\n\n[… document truncated for analysis …]"
+
+    from langchain_core.prompts import ChatPromptTemplate  # lazy
+    prompt = ChatPromptTemplate.from_messages([
+        ("system", _SUMMARISE_SYSTEM),
+        ("human",  _SUMMARISE_HUMAN),
+    ])
+    result = call_llm_with_retry(
+        chain_input={"text": text},
+        prompt=prompt,
+        request_id=request_id,
+    )
+    summary = result.content
+
+    logger.info(
+        "Text summarised — %d chars in, %d chars out (provider=%s, attempts=%d)",
+        len(text), len(summary), result.provider, result.attempts,
+        extra={"input_len": len(text), "summary_len": len(summary),
+               "provider": result.provider, "attempts": result.attempts},
+    )
+    return summary

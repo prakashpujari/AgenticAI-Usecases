@@ -7,15 +7,36 @@ services:
     buildCommand: pip install -r requirements.txt
     startCommand: uvicorn api.server:app --host 0.0.0.0 --port $PORT
     envVars:
-      - key: OPENAI_API_KEY
-        sync: false          # you set this manually in Render dashboard
-      - key: OPENAI_MODEL
-        value: gpt-4o
-      - key: OPENAI_EMBEDDING_MODEL
-        value: text-embedding-3-small
+      - key: GROQ_API_KEY
+        sync: false                        # set manually in Render dashboard
+      - key: GROQ_MODEL
+        value: llama-3.3-70b-versatile
+      - key: GROQ_FALLBACK_MODEL
+        value: llama-3.1-8b-instant
+      - key: GROQ_VISION_MODEL
+        value: meta-llama/llama-4-scout-17b-16e-instruct
+      - key: EMBEDDING_MODEL
+        value: BAAI/bge-small-en-v1.5
       - key: NUM_QUESTIONS
         value: "10"
       - key: LOG_TO_FILE
-        value: "false"       # Render captures stdout; no need for file logs
+        value: "false"
       - key: PYTHON_VERSION
         value: "3.11.0"
+      - key: REDIS_URL
+        value: redis://red-d836e2t7vvec73938sl0:6379
+      # Rate limiting
+      - key: RATE_LIMIT_MAX
+        value: "10"
+      - key: RATE_LIMIT_WINDOW
+        value: "3600"
+      - key: BURST_MAX
+        value: "3"
+      - key: GLOBAL_LLM_MAX
+        value: "100"
+      # Security — set a strong random secret in Render dashboard
+      - key: IDENTITY_HMAC_SECRET
+        sync: false
+      # CORS — set to your exact Vercel domain
+      - key: CORS_ALLOWED_ORIGIN
+        value: "https://frontend-six-red-29.vercel.app"

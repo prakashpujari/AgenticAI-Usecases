@@ -46,83 +46,29 @@ Public API
     stage_convert_to_pdf(md_path, pdf_path, metrics)   → Path
 """
 
+from __future__ import annotations   # lazy annotations — no eager name resolution
+
 from pathlib import Path
 from typing import Any
 
-from langchain_community.vectorstores import FAISS
-from langchain_core.documents import Document
-
 import config
 from observability.metrics import PipelineMetrics
-from langsmith import traceable
-# ── Domain imports ─────────────────────────────────────────────────────────────
-# Each domain module is imported from its new canonical location.
-# The original src/*.py files are kept as backward-compat stubs.
-from src.ingestion.pdf_generator  import create_sample_pdf
-from src.ingestion.pdf_extractor  import extract_and_clean
+from src.generation.qa_generator import _traceable as traceable, summarize_text
 from src.ingestion.document_loader import load_document
-from src.retrieval.embeddings_store import (
-    split_text,
-    build_vector_store,
-    load_vector_store,
-    get_all_documents,
+from src.output.output_formatter import (
+    format_questions_to_markdown,
+    format_text_to_markdown,
+    format_combined_to_markdown,
 )
-from src.generation.qa_generator  import generate_questions
-from src.output.output_formatter  import format_questions_to_markdown
-from src.output.pdf_converter     import convert_markdown_to_pdf
+from src.output.pdf_converter import convert_markdown_to_pdf
 
 QuestionDict = dict[str, Any]
 
 
-# ─── Stage 1: Generate sample PDF ─────────────────────────────────────────────
-@traceable(name="stage_generate_pdf", run_type="tool", tags=["ingestion"])
-def stage_generate_pdf(
-    output_path: Path | str,
-    metrics: PipelineMetrics,
-) -> Path:
-    """
-    Creates the sample Cloud Computing PDF using ReportLab.
-
-    Metrics recorded:
-      • pdf_path    — resolved path of the generated file
-      • file_size_b — file size in bytes (useful for detecting empty files)
-
-    Args:
-        output_path: Where to write the PDF.
-        metrics:     Active pipeline metrics tracker.
-
-    Returns:
-        Resolved Path of the generated PDF.
-    """
-    with metrics.stage("generate_sample_pdf") as s:
-        pdf_path = create_sample_pdf(output_path)
-        s.add("pdf_path",    str(pdf_path))
-        s.add("file_size_b", pdf_path.stat().st_size)
-    return pdf_path
-
-
-# ─── Stage 2: Extract and clean text ──────────────────────────────────────────
+# ─── Stage: Extract text ───────────────────────────────────────────────────────
 @traceable(name="stage_extract_text", run_type="tool", tags=["ingestion"])
-def stage_extract_text(
-    input_source: Path | str,
-    metrics: PipelineMetrics,
-) -> str:
-    """
-    Loads and cleans text from any supported document source.
-
-    Supported formats: PDF, TXT, MD, RST, CSV, DOCX, XLSX, or any HTTP(S) URL.
-
-    Metrics recorded:
-      • char_count    — character count of the cleaned text
-      • input_source  — source file path or URL
-
-    Args:
-        input_source: Local file path (any supported format) or http(s):// URL.
-        metrics:      Active pipeline metrics tracker.
-
-    Returns:
-        Cleaned text string.
-    """
+def stage_extract_text(input_source: Path | str, metrics: PipelineMetrics) -> str:
+    """Load and clean text from any supported source (file or URL)."""
     with metrics.stage("extract_text") as s:
         text = load_document(input_source)
         s.add("char_count",   len(text))
@@ -130,96 +76,20 @@ def stage_extract_text(
     return text
 
 
-# ─── Stage 3: Split text into chunks ──────────────────────────────────────────
-@traceable(name="stage_split_text", run_type="tool", tags=["ingestion"])
-def stage_split_text(
+# ─── Stage: Summarise via LLM ─────────────────────────────────────────────────
+@traceable(name="stage_summarize_text", run_type="llm", tags=["generation", "llm"])
+def stage_summarize_text(
     text: str,
     metrics: PipelineMetrics,
-) -> list[Document]:
-    """
-    Splits cleaned text into overlapping Document chunks for embedding.
-
-    Metrics recorded:
-      • chunk_count  — total number of chunks produced
-      • chunk_size   — configured chunk character limit
-      • chunk_overlap — configured overlap character count
-
-    Args:
-        text:    Cleaned text from stage_extract_text.
-        metrics: Active pipeline metrics tracker.
-
-    Returns:
-        List of LangChain Document objects.
-    """
-    with metrics.stage("split_text") as s:
-        chunks = split_text(text)
-        s.add("chunk_count",   len(chunks))
-        s.add("chunk_size",    config.CHUNK_SIZE)
-        s.add("chunk_overlap", config.CHUNK_OVERLAP)
-    return chunks
-
-
-# ─── Stage 4: Build / load vector store ───────────────────────────────────────
-
-@traceable(name="stage_build_vector_store", run_type="tool", tags=["retrieval"])
-def stage_build_vector_store(
-    chunks: list[Document],
-    metrics: PipelineMetrics,
-) -> FAISS:
-    """
-    Embeds chunks with OpenAI and persists them to a FAISS index.
-
-    Metrics recorded:
-      • chunk_count     — number of chunks embedded
-      • embedding_model — model name used for embedding
-      • index_path      — directory where the index was saved
-
-    Args:
-        chunks:  Documents from stage_split_text.
-        metrics: Active pipeline metrics tracker.
-
-    Returns:
-        In-memory FAISS vector store (also persisted to disk).
-    """
-    with metrics.stage("build_vector_store") as s:
-        vector_store = build_vector_store(chunks)
-        s.add("chunk_count",     len(chunks))
-        s.add("embedding_model", config.OPENAI_EMBEDDING_MODEL)
-        s.add("index_path",      str(config.FAISS_INDEX_PATH))
-    return vector_store
-
-
-# ─── Stage 5: Generate questions ──────────────────────────────────────────────
-
-@traceable(name="stage_generate_questions", run_type="chain", tags=["generation", "llm"])
-def stage_generate_questions(
-    vector_store: FAISS,
-    metrics: PipelineMetrics,
-    num_questions: int | None = None,
-) -> list[QuestionDict]:
-    """
-    Queries the vector store and calls the LLM to produce MCQ questions.
-
-    Metrics recorded:
-      • question_count — number of questions returned
-      • llm_model      — model name used for generation
-      • temperature    — sampling temperature (for reproducibility audit)
-
-    Args:
-        vector_store:  Populated FAISS instance from stage_build_vector_store.
-        metrics:       Active pipeline metrics tracker.
-        num_questions: Optional override for question count.
-
-    Returns:
-        List of validated QuestionDict objects.
-    """
-    with metrics.stage("generate_questions") as s:
-        questions = generate_questions(vector_store, num_questions=num_questions)
-        s.add("question_count", len(questions))
-        s.add("llm_model",      config.OPENAI_MODEL)
-        s.add("temperature",    config.TEMPERATURE)
-        s.add("requested_questions", num_questions or config.NUM_QUESTIONS)
-    return questions
+    request_id: str = "unknown",
+) -> str:
+    """Call the LLM to produce a structured Markdown summary of the extracted text."""
+    with metrics.stage("summarize_text") as s:
+        summary = summarize_text(text, request_id=request_id)
+        s.add("input_len",   len(text))
+        s.add("summary_len", len(summary))
+        s.add("llm_model",   config.GROQ_MODEL)
+    return summary
 
 
 # ─── Stage 6: Format Markdown ──────────────────────────────────────────────────
@@ -250,6 +120,51 @@ def stage_format_markdown(
     """
     with metrics.stage("format_markdown") as s:
         markdown_text = format_questions_to_markdown(
+            questions,
+            source_name=source_name,
+            output_path=output_path,
+        )
+        s.add("question_count", len(questions))
+        s.add("md_char_count",  len(markdown_text))
+        s.add("output_path",    str(output_path))
+    return markdown_text
+
+
+# ─── Stage 6b: Format text-only Markdown ─────────────────────────────────────
+
+@traceable(name="stage_format_text", run_type="tool", tags=["output"])
+def stage_format_text(
+    summary: str,
+    source_name: str,
+    output_path: Path | str,
+    metrics: PipelineMetrics,
+) -> str:
+    """Render the LLM summary as a standalone Markdown document."""
+    with metrics.stage("format_text") as s:
+        markdown_text = format_text_to_markdown(
+            summary,
+            source_name=source_name,
+            output_path=output_path,
+        )
+        s.add("md_char_count", len(markdown_text))
+        s.add("output_path",   str(output_path))
+    return markdown_text
+
+
+# ─── Stage 6c: Format combined Markdown (text + questions) ───────────────────
+
+@traceable(name="stage_format_combined", run_type="tool", tags=["output"])
+def stage_format_combined(
+    summary: str,
+    questions: list[QuestionDict],
+    source_name: str,
+    output_path: Path | str,
+    metrics: PipelineMetrics,
+) -> str:
+    """Render both the LLM summary and MCQ questions into a single Markdown document."""
+    with metrics.stage("format_combined") as s:
+        markdown_text = format_combined_to_markdown(
+            summary,
             questions,
             source_name=source_name,
             output_path=output_path,

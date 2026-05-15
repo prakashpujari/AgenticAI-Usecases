@@ -159,6 +159,21 @@ pre {
     color: #2e7d32;
     font-weight: bold;
 }
+
+.pdf-brand-footer {
+    margin-top: 24pt;
+    padding-top: 8pt;
+    border-top: 1pt solid #e0e0e0;
+    text-align: center;
+    font-size: 8pt;
+    color: #9e9e9e;
+    letter-spacing: 0.5pt;
+}
+
+.pdf-brand-footer span {
+    color: #3949ab;
+    font-weight: bold;
+}
 """
 
 # Minimal but valid HTML5 document template.
@@ -175,6 +190,9 @@ _HTML_TEMPLATE = """\
 </head>
 <body>
 {body}
+<div class="pdf-brand-footer">
+  Powered by <span>PrakashPujariAI</span>
+</div>
 </body>
 </html>
 """
