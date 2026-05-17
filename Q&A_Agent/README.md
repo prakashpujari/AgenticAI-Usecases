@@ -177,6 +177,7 @@ Q&A Agent is a production-grade full-stack AI application that turns any documen
 - **5-minute per-job timeout** — worker thread wraps each job with hard cap
 - **Startup cleanup** — marks any queued/processing jobs from previous crashes as `failed`
 - **Lazy imports** — all heavy LangChain/Groq imports inside function bodies (prevents Windows thread hang)
+- **YouTube on cloud hosts** — 3-layer transcript fallback so YouTube URLs work on Render/AWS (see below)
 
 ### Caching
 - **Two-layer cache**: Redis (persistent, cross-restart) + in-memory LRU (ephemeral, same session)
@@ -321,14 +322,20 @@ GET /api/qa/download/{pipeline_id}
 ```
 GET /api/dashboard/stats
 → { total, completed, failed, pending, cache_hits, avg_duration_ms,
-    by_mode, stage_avg_ms }
+    by_mode, hourly, stage_avg_ms }
 
 GET /api/dashboard/jobs?limit=20
 → { jobs: [ { pipeline_id, status, output_mode, num_questions,
                cached, duration_ms, reason, created_at } ] }
 
+GET /api/dashboard/reviews?limit=10
+→ { reviews: [...], stats: { total, avg_rating, distribution } }
+
 GET /api/dashboard/cache-status
 → { cache_enabled, redis_connected, cache_layers, cache_ttl_seconds }
+
+GET /api/debug/db
+→ { using_postgres, db_host, db_url_set, job_count }
 ```
 
 ---
@@ -345,14 +352,53 @@ GET /api/dashboard/cache-status
 
 ## Supported Input Types
 
-| Category | Extensions |
-|----------|-----------|
+| Category | Extensions / Formats |
+|----------|---------------------|
 | **Documents** | `.pdf` `.txt` `.md` `.rst` |
 | **Office** | `.docx` `.xlsx` `.xls` `.csv` |
-| **Images** | `.png` `.jpg` `.jpeg` `.webp` |
-| **Audio/Video** | `.mp3` `.wav` `.m4a` `.mp4` `.mov` `.avi` `.webm` `.mkv` |
-| **URLs** | `http://` `https://` (web pages) |
-| **YouTube** | `youtube.com` `youtu.be` (transcript extraction) |
+| **Images** | `.png` `.jpg` `.jpeg` `.webp` (Groq vision) |
+| **Audio/Video** | `.mp3` `.wav` `.m4a` `.mp4` `.mov` `.avi` `.webm` `.mkv` (Groq Whisper) |
+| **URLs** | `http://` `https://` (web pages, scraped to plain text) |
+| **YouTube** | `youtube.com` `youtu.be` — transcript or Whisper fallback (cloud-safe) |
+
+---
+
+## YouTube on Cloud Hosts (Render / AWS / GCP)
+
+YouTube's transcript/caption API endpoints (`/youtubei/v1/get_transcript`,
+`/api/timedtext`) are blocked for **datacenter IP ranges**. The app uses a
+three-layer fallback so YouTube URLs always work even when hosted on Render:
+
+```
+YouTube URL submitted
+       │
+       ▼
+Layer 1: youtube-transcript-api          (~1s)
+         Fast — no download required
+         Blocked on cloud IPs → fails on Render
+       │ FAIL
+       ▼
+Layer 2: yt-dlp VTT, Android player      (~5s)
+         Uses Android YouTube API client
+         Sometimes bypasses cloud-IP filter
+       │ FAIL
+       ▼
+Layer 3: yt-dlp audio → Groq Whisper     (~30s)
+         Audio served from googlevideo.com CDN
+         CDN is NOT filtered by cloud IP ranges
+         Guaranteed to work on any cloud host
+       │
+       ▼
+     Transcript text → Q&A / Summary pipeline
+```
+
+**No extra configuration needed.** When Layer 1 fails on Render, the app
+automatically falls back through Layers 2 and 3. Layer 3 adds ~30 s of
+processing time (audio download + Whisper transcription) but succeeds where
+the others are blocked.
+
+> **Note**: Whisper's 25 MB file limit applies. Videos longer than ~2 hours
+> may exceed it — in that case, paste the video script as a `.txt` file instead.
 
 ---
 
@@ -472,6 +518,9 @@ Run full pipeline → store in Redis + Memory LRU
 | Memory cache hit | < 5s (within same session) |
 | Fresh pipeline — small doc | 10–30s |
 | Fresh pipeline — large URL | 20–60s |
+| YouTube — transcript API (Layer 1) | +1s |
+| YouTube — yt-dlp VTT (Layer 2) | +5s |
+| YouTube — Whisper audio (Layer 3, Render) | +30–60s |
 | Groq per-minute rate limit | +10–30s (auto-retry) |
 
 ---
