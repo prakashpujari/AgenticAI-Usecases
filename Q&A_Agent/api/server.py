@@ -937,6 +937,76 @@ async def db_status(request: Request):
     }
 
 
+@app.get("/api/debug/youtube", tags=["Dashboard"])
+async def youtube_debug(request: Request, videoId: str = "arj7oStGLkU"):
+    """
+    Diagnose YouTube transcript setup end-to-end on the live Render server.
+    Tests cookie decoding, each transcript layer, and yt-dlp info extraction.
+    """
+    import base64, tempfile
+    from pathlib import Path
+
+    result: dict = {}
+
+    # ── 1. Cookie env var ─────────────────────────────────────────────────────
+    raw_env = config.YOUTUBE_COOKIES or ""
+    result["cookies_env_set"] = bool(raw_env)
+    result["cookies_env_len"] = len(raw_env)
+
+    cookies_path = None
+    if raw_env:
+        try:
+            raw_clean = "".join(raw_env.split())
+            decoded = base64.b64decode(raw_clean + "==").replace(b"\r\n", b"\n")
+            tmp = Path(tempfile.gettempdir()) / "yt_debug_cookies.txt"
+            tmp.write_bytes(decoded)
+            cookies_path = str(tmp)
+            result["cookies_decoded_bytes"] = len(decoded)
+            result["cookies_first_line"] = decoded.split(b"\n")[0].decode("utf-8", errors="replace")
+            result["cookies_path"] = cookies_path
+        except Exception as exc:
+            result["cookies_decode_error"] = str(exc)
+
+    # ── 2. Layer 1: youtube-transcript-api ────────────────────────────────────
+    try:
+        from youtube_transcript_api import YouTubeTranscriptApi
+        api = YouTubeTranscriptApi(cookies=cookies_path) if cookies_path else YouTubeTranscriptApi()
+        items = list(api.fetch(videoId)) if hasattr(api, "fetch") else []
+        if not items:
+            tl = api.list(videoId)
+            t = next(iter(tl), None)
+            items = list(t.fetch()) if t else []
+        text = " ".join((getattr(i, "text", None) or i.get("text", "")) for i in items)
+        result["layer1_status"] = "ok"
+        result["layer1_chars"] = len(text)
+    except Exception as exc:
+        result["layer1_status"] = "failed"
+        result["layer1_error"] = str(exc)[:200]
+
+    # ── 3. yt-dlp info extraction (no download) ───────────────────────────────
+    try:
+        import yt_dlp
+        opts = {"quiet": True, "no_warnings": True, "skip_download": True}
+        if cookies_path:
+            opts["cookiefile"] = cookies_path
+        with yt_dlp.YoutubeDL(opts) as ydl:
+            info = ydl.extract_info(f"https://www.youtube.com/watch?v={videoId}", download=False)
+        audio_fmts = [f for f in info.get("formats", [])
+                      if f.get("acodec") != "none" and f.get("vcodec") == "none"]
+        subs = info.get("subtitles", {})
+        auto_subs = info.get("automatic_captions", {})
+        result["ytdlp_status"] = "ok"
+        result["ytdlp_title"] = info.get("title", "")[:60]
+        result["ytdlp_audio_formats"] = len(audio_fmts)
+        result["ytdlp_subtitle_langs"] = list(subs.keys())[:5]
+        result["ytdlp_auto_caption_langs"] = list(auto_subs.keys())[:5]
+    except Exception as exc:
+        result["ytdlp_status"] = "failed"
+        result["ytdlp_error"] = str(exc)[:200]
+
+    return result
+
+
 if __name__ == "__main__":
     import uvicorn
 
