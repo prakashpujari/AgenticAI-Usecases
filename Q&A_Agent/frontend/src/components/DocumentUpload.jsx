@@ -145,14 +145,10 @@ export default function DocumentUpload({ onJobSubmitted }) {
                 setFile(null); setSource(''); setNumQuestions(5)
                 return
               }
-            } catch (proxyErr) {
-              const isYouTubeBlock = proxyErr.response?.data?.error === 'youtube_proxy_failed'
-              if (isYouTubeBlock) {
-                setLoading(false)
-                setError('YOUTUBE_BLOCKED')
-                return
-              }
-              setLoadingMsg('Falling back to server processing...')
+            } catch (_proxyErr) {
+              // Vercel proxy failed — fall through to Render backend which
+              // uses YOUTUBE_COOKIES for authenticated transcript access.
+              setLoadingMsg('Trying server-side processing...')
             }
           }
         }
@@ -172,7 +168,15 @@ export default function DocumentUpload({ onJobSubmitted }) {
       if (parsed.errorCode === 'RATE_LIMIT_EXCEEDED' || parsed.errorCode === 'SPIKE_ARREST') {
         setRateLimitInfo({ retryAfter: parsed.retryAfter, debugId: parsed.debugId })
       } else {
-        setError(parsed.message)
+        // Show the YouTube cookie setup guide when both Vercel proxy AND
+        // Render backend fail on a YouTube URL.
+        const isYtErr =
+          inputMode === 'source' &&
+          isYouTubeUrl(source.trim()) &&
+          (parsed.message.toLowerCase().includes('transcript') ||
+           parsed.message.toLowerCase().includes('youtube') ||
+           parsed.message.toLowerCase().includes('cookies'))
+        setError(isYtErr ? 'YOUTUBE_BLOCKED' : parsed.message)
       }
     } finally {
       setLoading(false)

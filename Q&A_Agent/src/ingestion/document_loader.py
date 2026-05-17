@@ -206,17 +206,25 @@ def _yt_cookies_file() -> str | None:
     Decode YOUTUBE_COOKIES env var (base64 Netscape cookies.txt) to a temp
     file and return its path, or None when the env var is unset.
 
-    Used by all three YouTube fallback layers so a single cookies export
-    bypasses YouTube's cloud-IP block for transcript API, yt-dlp VTT, and
-    yt-dlp audio download on Render / AWS / GCP.
+    Handles common encoding issues from Windows-exported cookies:
+    - Strips all whitespace from the base64 string (copy-paste newlines)
+    - Normalises CRLF → LF so yt-dlp parses the file on Linux Render
+    - Always rewrites the file (env var may have changed between deploys)
     """
     import base64
-    raw = config.YOUTUBE_COOKIES.strip()
+    raw = "".join(config.YOUTUBE_COOKIES.split())  # remove any embedded whitespace
     if not raw:
         return None
+    try:
+        cookies_bytes = base64.b64decode(raw + "==")  # extra padding is safe
+    except Exception as exc:
+        logger.warning("YOUTUBE_COOKIES base64 decode failed: %s", exc)
+        return None
+    # Normalise Windows CRLF → LF so yt-dlp parses correctly on Linux
+    cookies_bytes = cookies_bytes.replace(b"\r\n", b"\n")
     cookies_path = Path(tempfile.gettempdir()) / "yt_cookies.txt"
-    if not cookies_path.exists():
-        cookies_path.write_bytes(base64.b64decode(raw))
+    cookies_path.write_bytes(cookies_bytes)  # always overwrite — env var may change
+    logger.info("YOUTUBE_COOKIES written to %s (%d bytes)", cookies_path, len(cookies_bytes))
     return str(cookies_path)
 
 
