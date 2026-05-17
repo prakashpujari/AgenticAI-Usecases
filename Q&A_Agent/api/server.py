@@ -907,11 +907,33 @@ async def cache_status(request: Request):
         pass
 
     return {
-        "cache_enabled":      True,          # always on (memory fallback)
+        "cache_enabled":      True,
         "redis_connected":    redis_ok,
         "redis_url_set":      bool(config.REDIS_URL),
         "cache_ttl_seconds":  config.CACHE_TTL,
         "cache_layers":       "redis+memory" if redis_ok else "memory-only",
+    }
+
+
+@app.get("/api/debug/db", tags=["Dashboard"])
+async def db_status(request: Request):
+    """Show which database backend is active and the configured URL host."""
+    from api.database import _using_postgres
+    import api.database as _db
+    db_url = config.DATABASE_URL or ""
+    host = db_url.split("@")[-1].split("/")[0] if "@" in db_url else "none"
+    row_count = None
+    try:
+        from api.database import get_dashboard_stats
+        s = get_dashboard_stats()
+        row_count = s.get("total")
+    except Exception:
+        pass
+    return {
+        "using_postgres": _using_postgres,
+        "db_host":        host,
+        "db_url_set":     bool(db_url),
+        "job_count":      row_count,
     }
 
 
