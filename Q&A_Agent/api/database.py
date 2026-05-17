@@ -144,6 +144,7 @@ CREATE TABLE IF NOT EXISTS qa_reviews (
     output_mode     TEXT,
     job_id          TEXT,
     identity        TEXT,
+    reviewer_name   TEXT,
     created_at      TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     sentiment       TEXT,
     sentiment_score REAL
@@ -169,7 +170,11 @@ def init_db() -> None:
         with _pg_conn() as conn:
             with conn.cursor() as cur:
                 cur.execute(_SCHEMA_SQL)
-        logger.info("PostgreSQL schema ready (qa_jobs, qa_stage_timings)")
+                # Migration: add reviewer_name to existing qa_reviews tables
+                cur.execute("""
+                    ALTER TABLE qa_reviews ADD COLUMN IF NOT EXISTS reviewer_name TEXT
+                """)
+        logger.info("PostgreSQL schema ready (qa_jobs, qa_stage_timings, qa_reviews)")
     except Exception as exc:
         logger.error("Failed to init PostgreSQL schema: %s", exc)
         _init_sqlite()
@@ -223,6 +228,7 @@ def _init_sqlite() -> None:
                 output_mode     TEXT,
                 job_id          TEXT,
                 identity        TEXT,
+                reviewer_name   TEXT,
                 created_at      TEXT NOT NULL,
                 sentiment       TEXT,
                 sentiment_score REAL
@@ -230,6 +236,11 @@ def _init_sqlite() -> None:
         """)
         conn.execute("CREATE INDEX IF NOT EXISTS idx_reviews_created_at ON qa_reviews(created_at DESC)")
         conn.execute("CREATE INDEX IF NOT EXISTS idx_reviews_rating ON qa_reviews(rating)")
+        # Migration: add reviewer_name to existing tables
+        try:
+            conn.execute("ALTER TABLE qa_reviews ADD COLUMN reviewer_name TEXT")
+        except Exception:
+            pass
         conn.commit()
     logger.info("SQLite schema ready: %s", _SQLITE_PATH)
 
@@ -537,8 +548,8 @@ def save_review(review: dict[str, Any]) -> None:
         sql = """
             INSERT INTO qa_reviews
               (review_id, rating, review_text, use_case, output_mode,
-               job_id, identity, created_at)
-            VALUES (%s,%s,%s,%s,%s,%s,%s,%s)
+               job_id, identity, reviewer_name, created_at)
+            VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s)
             ON CONFLICT (review_id) DO NOTHING
         """
         try:
@@ -552,6 +563,7 @@ def save_review(review: dict[str, Any]) -> None:
                         review.get("output_mode"),
                         review.get("job_id"),
                         review.get("identity"),
+                        review.get("reviewer_name"),
                         now,
                     ))
             return
@@ -562,8 +574,8 @@ def save_review(review: dict[str, Any]) -> None:
         conn.execute("""
             INSERT OR IGNORE INTO qa_reviews
               (review_id, rating, review_text, use_case, output_mode,
-               job_id, identity, created_at)
-            VALUES (?,?,?,?,?,?,?,?)
+               job_id, identity, reviewer_name, created_at)
+            VALUES (?,?,?,?,?,?,?,?,?)
         """, (
             rid,
             int(review["rating"]),
@@ -572,6 +584,7 @@ def save_review(review: dict[str, Any]) -> None:
             review.get("output_mode"),
             review.get("job_id"),
             review.get("identity"),
+            review.get("reviewer_name"),
             now,
         ))
         conn.commit()
@@ -585,7 +598,8 @@ def get_reviews(limit: int = 20) -> list[dict]:
                 with conn.cursor() as cur:
                     cur.execute("""
                         SELECT review_id, rating, review_text, use_case,
-                               output_mode, job_id, created_at, sentiment, sentiment_score
+                               output_mode, job_id, reviewer_name, created_at,
+                               sentiment, sentiment_score
                         FROM qa_reviews ORDER BY created_at DESC LIMIT %s
                     """, (limit,))
                     cols = [d[0] for d in cur.description]
@@ -601,7 +615,8 @@ def get_reviews(limit: int = 20) -> list[dict]:
         conn.row_factory = sqlite3.Row
         rows = conn.execute("""
             SELECT review_id, rating, review_text, use_case,
-                   output_mode, job_id, created_at, sentiment, sentiment_score
+                   output_mode, job_id, reviewer_name, created_at,
+                   sentiment, sentiment_score
             FROM qa_reviews ORDER BY created_at DESC LIMIT ?
         """, (limit,)).fetchall()
         return [dict(r) for r in rows]

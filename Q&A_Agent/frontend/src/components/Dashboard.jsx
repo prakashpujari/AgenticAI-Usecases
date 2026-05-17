@@ -83,12 +83,13 @@ const USE_CASES = [
 ]
 
 function ReviewForm({ onSubmitted }) {
-  const [rating,     setRating]     = useState(0)
-  const [text,       setText]       = useState('')
-  const [useCase,    setUseCase]    = useState('')
-  const [submitting, setSubmitting] = useState(false)
-  const [done,       setDone]       = useState(false)
-  const [err,        setErr]        = useState('')
+  const [rating,        setRating]        = useState(0)
+  const [text,          setText]          = useState('')
+  const [useCase,       setUseCase]       = useState('')
+  const [reviewerName,  setReviewerName]  = useState('')
+  const [submitting,    setSubmitting]    = useState(false)
+  const [done,          setDone]          = useState(false)
+  const [err,           setErr]           = useState('')
 
   const handleSubmit = async (e) => {
     e.preventDefault()
@@ -98,8 +99,9 @@ function ReviewForm({ onSubmitted }) {
     try {
       await axios.post('/api/reviews', {
         rating,
-        review_text: text,
-        use_case:    useCase,
+        review_text:   text,
+        use_case:      useCase,
+        reviewer_name: reviewerName.trim(),
       })
       setDone(true)
       onSubmitted?.()
@@ -122,6 +124,20 @@ function ReviewForm({ onSubmitted }) {
 
   return (
     <form onSubmit={handleSubmit} className="space-y-4">
+      <div>
+        <label className="block text-sm font-medium text-gray-700 mb-1">
+          Your Name <span className="text-gray-400 font-normal">(optional)</span>
+        </label>
+        <input
+          type="text"
+          value={reviewerName}
+          onChange={(e) => setReviewerName(e.target.value)}
+          maxLength={80}
+          placeholder="e.g. Alice or @alice"
+          className="w-full text-sm border border-gray-300 rounded-md px-3 py-2 focus:outline-none focus:ring-2 focus:ring-indigo-400"
+        />
+      </div>
+
       <div>
         <label className="block text-sm font-medium text-gray-700 mb-2">Your Rating</label>
         <StarRating value={rating} onChange={setRating} />
@@ -177,12 +193,26 @@ function ReviewCard({ review }) {
     negative: 'text-red-500',
   }[review.sentiment] ?? 'text-gray-400'
 
+  const initials = review.reviewer_name
+    ? review.reviewer_name.trim().split(/\s+/).map(w => w[0]).join('').toUpperCase().slice(0, 2)
+    : '?'
+
   return (
     <div className="bg-white rounded-xl border border-gray-200 p-4 space-y-2">
-      <div className="flex items-center justify-between">
+      {/* Header: avatar + name + date */}
+      <div className="flex items-center gap-3">
+        <div className="w-8 h-8 rounded-full bg-indigo-100 text-indigo-700 text-xs font-bold flex items-center justify-center flex-shrink-0">
+          {initials}
+        </div>
+        <div className="flex-1 min-w-0">
+          <p className="text-sm font-semibold text-gray-800 truncate">
+            {review.reviewer_name || <span className="text-gray-400 font-normal italic">Anonymous</span>}
+          </p>
+          <p className="text-xs text-gray-400">{date}</p>
+        </div>
         <StarRating value={review.rating} readonly />
-        <span className="text-xs text-gray-400">{date}</span>
       </div>
+
       {review.use_case && (
         <span className="inline-block text-xs px-2 py-0.5 rounded-full bg-indigo-50 text-indigo-700 font-medium">
           {review.use_case}

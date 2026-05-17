@@ -62,6 +62,13 @@ from api.cache import make_cache_key, get_cached, set_cached
 setup_logging()
 _langsmith_active = setup_langsmith()
 logger = get_logger("qa_agent.api")
+# Always print so it's visible in Render logs regardless of log level
+print(
+    f"[STARTUP] LangSmith tracing={'ACTIVE' if _langsmith_active else 'DISABLED'} "
+    f"project={config.LANGCHAIN_PROJECT!r} "
+    f"key_set={bool(os.getenv('LANGCHAIN_API_KEY'))}",
+    flush=True,
+)
 
 API_VERSION     = "1.0.0"
 API_DIR         = Path(__file__).parent
@@ -390,10 +397,12 @@ def _update_job_status(
 # ── Pydantic Models ───────────────────────────────────────────────────────────
 class HealthResponse(BaseModel):
     """Health check response."""
-    status: str
-    version: str
-    timestamp: str
-    powered_by: str = "PrakashPujariAI"
+    status:            str
+    version:           str
+    timestamp:         str
+    powered_by:        str  = "PrakashPujariAI"
+    langsmith_active:  bool = False
+    langsmith_project: str  = ""
 
 
 class SubmitJobRequest(BaseModel):
@@ -447,6 +456,8 @@ async def health_check(request: Request) -> HealthResponse:
         version=API_VERSION,
         timestamp=datetime.now(timezone.utc).isoformat(),
         powered_by="PrakashPujariAI",
+        langsmith_active=_langsmith_active,
+        langsmith_project=config.LANGCHAIN_PROJECT if _langsmith_active else "",
     )
 
 
@@ -848,10 +859,11 @@ async def dashboard_jobs(request: Request, limit: int = 50):
 
 
 class ReviewRequest(BaseModel):
-    rating:      int           # 1–5
-    review_text: str  = ""
-    use_case:    str  = ""     # e.g. "education", "interview prep"
-    output_mode: str  = ""
+    rating:        int  # 1–5
+    review_text:   str  = ""
+    use_case:      str  = ""   # e.g. "education", "interview prep"
+    output_mode:   str  = ""
+    reviewer_name: str  = ""   # optional display name shown on the dashboard
     job_id:      str  = ""
 
 
@@ -871,11 +883,12 @@ async def submit_review(request: Request, body: ReviewRequest):
     request_id = getattr(request.state, "request_id", "unknown")
 
     review = {
-        "review_id":   str(uuid.uuid4()),
-        "rating":      body.rating,
-        "review_text": body.review_text.strip()[:2000],  # cap to 2 KB
-        "use_case":    body.use_case.strip()[:100],
-        "output_mode": body.output_mode.strip()[:20],
+        "review_id":     str(uuid.uuid4()),
+        "rating":        body.rating,
+        "review_text":   body.review_text.strip()[:2000],
+        "use_case":      body.use_case.strip()[:100],
+        "output_mode":   body.output_mode.strip()[:20],
+        "reviewer_name": body.reviewer_name.strip()[:80],
         "job_id":      body.job_id.strip()[:20],
         "identity":    identity,
     }
