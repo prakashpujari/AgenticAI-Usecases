@@ -336,22 +336,31 @@ def _execute_pipeline(job: dict[str, Any]) -> None:
 
         # Wrap in a parent LangSmith trace so all @traceable stage spans appear
         # as children, and flush after completion to guarantee delivery.
-        if _langsmith_active:
-            import langsmith as _ls
-            with _ls.trace(
-                name       = "qa_pipeline",
-                run_type   = "chain",
-                project_name = config.LANGCHAIN_PROJECT,
-                metadata   = {
-                    "pipeline_id":  pipeline_id,
-                    "output_mode":  output_mode,
-                    "num_questions": num_questions,
-                    "input_source": input_source[:200],
-                },
-                tags = ["pipeline", output_mode],
-            ):
+        # Re-check env var at job run time (not just startup) in case the API
+        # key was added to Render dashboard after the server first started.
+        _ls_key = os.getenv("LANGCHAIN_API_KEY", "")
+        _ls_on  = os.getenv("LANGCHAIN_TRACING_V2", "").lower() in ("true", "1") and bool(_ls_key)
+
+        if _ls_on:
+            try:
+                import langsmith as _ls
+                with _ls.trace(
+                    name         = "qa_pipeline",
+                    run_type     = "chain",
+                    project_name = os.getenv("LANGCHAIN_PROJECT", config.LANGCHAIN_PROJECT),
+                    metadata     = {
+                        "pipeline_id":   pipeline_id,
+                        "output_mode":   output_mode,
+                        "num_questions": num_questions,
+                        "input_source":  input_source[:200],
+                    },
+                    tags = ["pipeline", output_mode],
+                ):
+                    result = _invoke_graph()
+                _ls.flush()
+            except Exception as ls_exc:
+                logger.warning("LangSmith trace failed — running without tracing: %s", ls_exc)
                 result = _invoke_graph()
-            _ls.flush()   # force all buffered spans to be sent before thread ends
         else:
             result = _invoke_graph()
 
@@ -392,9 +401,27 @@ def _execute_pipeline(job: dict[str, Any]) -> None:
         duration_ms = (time.monotonic() - t_pipeline_start) * 1000
         logger.exception("Pipeline error in job %s: %s", pipeline_id, exc,
                          extra={"pipeline_id": pipeline_id})
-        _update_job_status(pipeline_id, "failed", error_message=str(exc))
-        update_job(pipeline_id, status="failed", error_message=str(exc))
+        # Sanitise the user-facing message — never expose model names, API details,
+        # or internal stack info. Log the full error internally above.
+        user_msg = _sanitise_error(exc)
+        _update_job_status(pipeline_id, "failed", error_message=user_msg)
+        update_job(pipeline_id, status="failed", error_message=user_msg)
         save_stage_timing(pipeline_id, "total_pipeline", duration_ms, "failed")
+
+
+def _sanitise_error(exc: Exception) -> str:
+    """Return a user-safe error message without model names or API internals."""
+    msg = str(exc).lower()
+    if any(k in msg for k in ("rate limit", "quota", "429", "too many requests",
+                               "temporarily unavailable", "ai service")):
+        return ("The AI service is temporarily unavailable due to high demand. "
+                "Please try again in a few minutes.")
+    if any(k in msg for k in ("transcript", "youtube", "caption")):
+        return str(exc)   # YouTube errors are already user-friendly
+    if any(k in msg for k in ("file not found", "no extractable", "empty")):
+        return str(exc)
+    # Generic fallback — omit technical details
+    return "An error occurred while processing your request. Please try again."
 
 
 def _update_job_status(

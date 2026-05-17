@@ -114,62 +114,102 @@ class LLMCallResult:
     total_latency_ms: float
 
 
-def _build_llm(model: str):
-    from langchain_groq import ChatGroq   # lazy — avoids worker-thread hang
+def _build_groq_llm(model: str):
+    from langchain_groq import ChatGroq
     return ChatGroq(
         model=model,
         api_key=config.GROQ_API_KEY,
         temperature=config.TEMPERATURE,
-        max_retries=0,      # retries managed by call_llm_with_retry
-        request_timeout=30, # hard 30-second timeout per API call; prevents infinite hang
+        max_retries=0,
+        request_timeout=30,
     )
+
+
+def _build_gemini_llm():
+    """Build Google Gemini LLM — free-tier fallback when Groq quota is exhausted."""
+    from langchain_google_genai import ChatGoogleGenerativeAI
+    return ChatGoogleGenerativeAI(
+        model=config.GEMINI_MODEL,
+        google_api_key=config.GEMINI_API_KEY,
+        temperature=config.TEMPERATURE,
+        max_retries=0,
+    )
+
+
+def _providers() -> list[tuple[str, str, callable]]:
+    """
+    Return ordered provider list: multiple Groq models then Gemini.
+
+    Each Groq model has an INDEPENDENT daily/per-minute quota so rotating
+    through them maximises available capacity before hitting Gemini.
+
+    Provider tuple: (internal_name, display_slot, llm_factory)
+    """
+    groq_models = [
+        config.GROQ_MODEL,           # primary (e.g. llama-3.3-70b-versatile)
+        config.GROQ_FALLBACK_MODEL,  # first fallback (e.g. llama-3.1-8b-instant)
+        "gemma2-9b-it",              # higher Groq rate limits than Llama 70B
+        "llama-3.2-3b-preview",      # smallest / highest Groq quota
+    ]
+    # Deduplicate while preserving order
+    seen: set[str] = set()
+    providers = []
+    for m in groq_models:
+        if m and m not in seen:
+            seen.add(m)
+            providers.append(("groq", m, lambda _m=m: _build_groq_llm(_m)))
+
+    if config.GEMINI_API_KEY:
+        providers.append(("gemini", config.GEMINI_MODEL, _build_gemini_llm))
+
+    return providers
 
 
 def call_llm_with_retry(
     chain_input: dict,
-    prompt,               # ChatPromptTemplate — type hint omitted to avoid import
+    prompt,
     request_id: str = "unknown",
-    max_attempts: int = 3,
+    max_attempts: int = 2,
     base_delay: float = 1.0,
 ) -> LLMCallResult:
     """
-    Invoke the LLM chain with exponential-backoff retry and provider fallback.
+    Invoke the LLM chain with exponential-backoff retry and multi-provider fallback.
 
     Attempt order:
-      1. Primary model (GROQ_MODEL)         — up to max_attempts times
-      2. Fallback model (GROQ_FALLBACK_MODEL) — up to max_attempts times
+      1. Primary Groq model (GROQ_MODEL)
+      2. Groq fallback model (GROQ_FALLBACK_MODEL)
+      3. gemma2-9b-it on Groq  (higher independent quota)
+      4. llama-3.2-3b-preview on Groq (highest Groq quota)
+      5. Google Gemini (gemini-2.0-flash) — if GEMINI_API_KEY is set
 
-    Only retries on transient errors (timeouts, 5xx, rate limits).
-    Non-retryable errors (bad request, auth) switch providers immediately.
+    Switches to the next provider immediately on daily-quota exhaustion or
+    after max_attempts transient retries.
     """
-    providers = [
-        ("groq-primary",  config.GROQ_MODEL),
-        ("groq-fallback", config.GROQ_FALLBACK_MODEL),
-    ]
+    from langchain_core.output_parsers import StrOutputParser
+
     t_start = time.monotonic()
 
-    for provider_name, model_name in providers:
-        from langchain_core.output_parsers import StrOutputParser  # lazy
-        llm   = _build_llm(model_name)
-        chain = prompt | llm | StrOutputParser()
+    for backend, model_name, llm_factory in _providers():
+        try:
+            llm   = llm_factory()
+            chain = prompt | llm | StrOutputParser()
+        except Exception as build_exc:
+            logger.warning("Failed to build LLM (%s %s): %s", backend, model_name, build_exc)
+            continue
 
         for attempt in range(1, max_attempts + 1):
             try:
                 content = chain.invoke(chain_input)
                 latency = (time.monotonic() - t_start) * 1000
                 logger.info(
-                    "LLM call succeeded",
-                    extra={
-                        "request_id": request_id,
-                        "provider":   provider_name,
-                        "model":      model_name,
-                        "attempt":    attempt,
-                        "latency_ms": round(latency, 1),
-                    },
+                    "LLM call succeeded backend=%s attempt=%d latency=%.0fms",
+                    backend, attempt, latency,
+                    extra={"request_id": request_id, "backend": backend,
+                           "attempt": attempt, "latency_ms": round(latency, 1)},
                 )
                 return LLMCallResult(
                     content=content,
-                    provider=provider_name,
+                    provider=backend,
                     model=model_name,
                     attempts=attempt,
                     total_latency_ms=round(latency, 1),
@@ -177,49 +217,35 @@ def call_llm_with_retry(
 
             except Exception as exc:
                 retryable = _is_retryable(exc)
-                # Log the full error so it's visible in plain-text logs
                 logger.warning(
-                    "LLM attempt failed [%s/%d] provider=%s error=%s",
-                    attempt, max_attempts, provider_name, str(exc)[:400],
-                    extra={
-                        "request_id": request_id,
-                        "provider":   provider_name,
-                        "model":      model_name,
-                        "attempt":    attempt,
-                        "error_type": type(exc).__name__,
-                        "retryable":  retryable,
-                    },
+                    "LLM attempt failed [%d/%d] backend=%s retryable=%s error=%s",
+                    attempt, max_attempts, backend, retryable, str(exc)[:300],
+                    extra={"request_id": request_id, "backend": backend,
+                           "attempt": attempt, "error_type": type(exc).__name__},
                 )
+
                 if not retryable:
-                    break  # switch to next provider immediately
+                    break  # non-retryable (bad input, auth) — try next provider
 
                 retry_after = _parse_retry_after(exc)
-                if retry_after is not None and retry_after > 30:
-                    # Daily limit exhausted — waiting 14+ minutes is not viable.
-                    # Fail fast and let the caller switch to the fallback model.
-                    logger.warning(
-                        "Daily token limit hit on %s (retry in %.0fs) — switching provider",
-                        provider_name, retry_after,
-                    )
+                if retry_after is not None and retry_after > 60:
+                    # Daily limit: switching immediately is better than waiting
+                    logger.warning("Quota exhausted on %s (%.0fs wait) — switching provider",
+                                   backend, retry_after)
                     break
 
-                # Per-minute rate limit: wait the suggested time (capped at 30 s).
-                wait = retry_after if retry_after else base_delay * (2 ** (attempt - 1))
-                wait = min(wait + 1, 30)   # +1 s buffer; max 30 s
+                wait = min((retry_after or base_delay * (2 ** (attempt - 1))) + 1, 30)
                 if attempt < max_attempts:
-                    logger.info("Rate-limited — waiting %.1f s before retry", wait)
+                    logger.info("Rate-limited — waiting %.1f s", wait)
                     time.sleep(wait)
 
-        logger.error(
-            "Provider exhausted, switching to fallback",
-            extra={"request_id": request_id, "failed_provider": provider_name},
-        )
+        logger.warning("Provider exhausted: backend=%s — trying next", backend)
 
     latency = (time.monotonic() - t_start) * 1000
     raise RuntimeError(
-        f"Groq API rate limit reached (daily or per-minute quota exhausted). "
-        f"Please wait a few minutes and try again. "
-        f"request_id={request_id} elapsed={latency:.0f}ms"
+        "The AI service is temporarily unavailable due to high demand. "
+        "Please try again in a few minutes."
+        f" (request_id={request_id})"
     )
 
 # Type alias: a single Q&A dict as returned by the LLM and validated by us

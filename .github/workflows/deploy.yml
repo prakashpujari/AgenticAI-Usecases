@@ -11,10 +11,6 @@ jobs:
   deploy-backend:
     name: Deploy Backend (Render)
     runs-on: ubuntu-latest
-    # Run when any backend file changes (everything except the frontend directory)
-    if: |
-      contains(toJson(github.event.commits), 'Q&A_Agent/') &&
-      !startsWith(github.event.head_commit.message, 'skip-render')
     steps:
       - name: Trigger Render deploy
         run: |
@@ -23,8 +19,8 @@ jobs:
             "${{ secrets.RENDER_DEPLOY_HOOK_URL }}" \
             -X POST)
           echo "$RESPONSE"
-          DEPLOY_ID=$(echo "$RESPONSE" | python3 -c "import sys,json; d=json.load(sys.stdin); print(d.get('deploy',{}).get('id','unknown'))")
-          STATUS=$(echo "$RESPONSE" | python3 -c "import sys,json; d=json.load(sys.stdin); print(d.get('deploy',{}).get('status','unknown'))")
+          DEPLOY_ID=$(echo "$RESPONSE" | python3 -c "import sys,json; d=json.load(sys.stdin); print(d.get('deploy',{}).get('id','unknown'))" 2>/dev/null || echo "unknown")
+          STATUS=$(echo "$RESPONSE" | python3 -c "import sys,json; d=json.load(sys.stdin); print(d.get('deploy',{}).get('status','unknown'))" 2>/dev/null || echo "unknown")
           echo "Deploy ID : $DEPLOY_ID"
           echo "Status    : $STATUS"
 

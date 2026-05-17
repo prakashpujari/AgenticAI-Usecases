@@ -9,6 +9,10 @@ services:
     envVars:
       - key: GROQ_API_KEY
         sync: false                        # set manually in Render dashboard
+      # Google Gemini — free fallback when Groq quota is exhausted
+      # Free key at https://aistudio.google.com/apikey (no credit card)
+      - key: GEMINI_API_KEY
+        sync: false
       - key: GROQ_MODEL
         value: llama-3.3-70b-versatile
       - key: GROQ_FALLBACK_MODEL

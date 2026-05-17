@@ -67,6 +67,12 @@ GROQ_MODEL: str          = os.getenv("GROQ_MODEL", "llama-3.3-70b-versatile")
 GROQ_FALLBACK_MODEL: str = os.getenv("GROQ_FALLBACK_MODEL", "llama-3.1-8b-instant")
 GROQ_VISION_MODEL: str   = os.getenv("GROQ_VISION_MODEL", "meta-llama/llama-4-scout-17b-16e-instruct")
 
+# ── Google Gemini (free fallback when Groq quota is exhausted) ─────────────────
+# Free tier: 1 500 req/day, 15 req/min for gemini-2.0-flash.
+# Get a key at https://aistudio.google.com/apikey (no credit card required).
+GEMINI_API_KEY: str  = os.getenv("GEMINI_API_KEY", "")
+GEMINI_MODEL: str    = os.getenv("GEMINI_MODEL", "gemini-2.0-flash")
+
 # Embeddings use a local ONNX model via fastembed (Groq has no embedding API).
 EMBEDDING_MODEL: str = os.getenv("EMBEDDING_MODEL", "sentence-transformers/all-MiniLM-L6-v2")
 

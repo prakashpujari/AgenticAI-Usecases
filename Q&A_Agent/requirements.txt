@@ -10,6 +10,9 @@ langchain-huggingface>=0.1.0
 # ── Groq SDK ──────────────────────────────────────────────────────────────────
 groq>=0.11.0
 
+# ── Google Gemini fallback LLM (free tier: 1500 req/day, 15 req/min) ──────────
+langchain-google-genai>=2.0.0
+
 # ── HuggingFace sentence embeddings (local, no API key required) ──────────────
 sentence-transformers>=3.0.0
 
