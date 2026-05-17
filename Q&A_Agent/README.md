@@ -44,49 +44,80 @@ Q&A Agent is a production-grade full-stack AI application that turns any documen
 ## Architecture
 
 ```
-┌──────────────────────────────────────────────────────────────────────┐
-│                     VERCEL EDGE  (Frontend)                          │
-│                                                                      │
-│   React + Tailwind  ──► /api/* rewrite ──► Render Backend           │
-│   CDN-cached static assets  │  No secrets  │  HTTPS only            │
-└──────────────────────────────────────────────────────────────────────┘
-                              │ HTTPS
-                              ▼
-┌──────────────────────────────────────────────────────────────────────┐
-│                     RENDER  (FastAPI Backend)                        │
-│                                                                      │
-│  ┌─────────────────────────────────────────────────────────────┐    │
-│  │  Middleware Stack                                            │    │
-│  │  RequestId → BodySizeLimit → CORS → extract_identity()      │    │
-│  │  → check_spike_arrest() → check_rate_limit()                │    │
-│  │  → waf_scan() → validate_file/url()                        │    │
-│  └──────────────────────┬──────────────────────────────────────┘    │
-│                          │                                           │
-│  ┌───────────────────────▼──────────────────────────────────────┐   │
-│  │  Cache Check (Redis → In-Memory LRU)                         │   │
-│  │  HIT → return cached PDF  │  MISS → queue job               │   │
-│  └───────────────────────┬──────────────────────────────────────┘   │
-│                          │                                           │
-│  ┌───────────────────────▼──────────────────────────────────────┐   │
-│  │  Background Worker  (5-min hard timeout per job)             │   │
-│  │                                                              │   │
-│  │  LangGraph Pipeline:                                         │   │
-│  │  extract_text → [summarize_text | generate_questions]        │   │
-│  │               → format_output → convert_pdf                  │   │
-│  │                                                              │   │
-│  │  LLM: Groq llama-3.3-70b-versatile                          │   │
-│  │       ↳ fallback: llama-3.1-8b-instant                      │   │
-│  │       ↳ retry: 3 attempts + exponential backoff             │   │
-│  └───────────────────────┬──────────────────────────────────────┘   │
-│                          │                                           │
-│  ┌───────────────────────▼──────────────────────────────────────┐   │
-│  │  PostgreSQL (primary) / SQLite (fallback)                    │   │
-│  │  • qa_jobs — status, duration, cached flag, error reason     │   │
-│  │  • qa_stage_timings — per-stage performance metrics          │   │
-│  └──────────────────────────────────────────────────────────────┘   │
-│                                                                      │
-│  Redis (response cache + rate limiting)                              │
-└──────────────────────────────────────────────────────────────────────┘
+┌─────────────────────────────────────────────────────────────────────────┐
+│                      VERCEL EDGE  (Frontend)                            │
+│                                                                         │
+│   React + Tailwind  ──► /api/* rewrite ──► Render Backend              │
+│   CDN-cached static assets  │  No secrets stored  │  HTTPS only        │
+└─────────────────────────────────────────────────────────────────────────┘
+                               │ HTTPS
+                               ▼
+┌─────────────────────────────────────────────────────────────────────────┐
+│                      RENDER  (FastAPI Backend)                          │
+│                                                                         │
+│  ┌──────────────────────────────────────────────────────────────────┐  │
+│  │  Middleware Stack                                                 │  │
+│  │  RequestId → BodySizeLimit → CORS → extract_identity()           │  │
+│  │  → check_spike_arrest() → check_rate_limit()                     │  │
+│  │  → waf_scan() → validate_file/url()                              │  │
+│  └─────────────────────────┬────────────────────────────────────────┘  │
+│                             │                                           │
+│  ┌──────────────────────────▼────────────────────────────────────────┐ │
+│  │  Cache Check (Redis → In-Memory LRU)                              │ │
+│  │  HIT → return cached PDF  │  MISS → queue job                    │ │
+│  └──────────────────────────┬────────────────────────────────────────┘ │
+│                             │                                           │
+│  ┌──────────────────────────▼────────────────────────────────────────┐ │
+│  │  Background Worker  (5-min hard timeout per job)                  │ │
+│  │                                                                   │ │
+│  │  LangGraph Pipeline:                                              │ │
+│  │  extract_text → [summarize_text | generate_questions]             │ │
+│  │               → format_output → convert_pdf                       │ │
+│  │                                                                   │ │
+│  │  LLM: Groq llama-3.3-70b-versatile                               │ │
+│  │       ↳ fallback: llama-3.1-8b-instant                           │ │
+│  │       ↳ retry: 3 attempts + exponential backoff                  │ │
+│  └──────────────────────────┬────────────────────────────────────────┘ │
+│                             │                                           │
+│  ┌──────────────────────────▼────────────────────────────────────────┐ │
+│  │  Job Lookup (status / download endpoints)                         │ │
+│  │  SQLite (ephemeral, fast) ──MISS──► PostgreSQL (persistent)       │ │
+│  │  Survives Render sleep/restart — previous jobs always found       │ │
+│  └──────────────────────────────────────────────────────────────────┘  │
+│                                                                         │
+│  ┌──────────────────────────────────────────────────────────────────┐  │
+│  │  Keep-Alive Pinger  (daemon thread)                              │  │
+│  │  GET /health every 10 min → prevents Render free-tier sleep      │  │
+│  │  Reads RENDER_EXTERNAL_URL — no-op in local dev                  │  │
+│  └──────────────────────────────────────────────────────────────────┘  │
+│                                                                         │
+│  Redis (response cache + rate limiting counters)                        │
+└─────────────────────────────────────────────────────────────────────────┘
+                               │ sslmode=require
+                               ▼
+┌─────────────────────────────────────────────────────────────────────────┐
+│              RENDER POSTGRESQL  (External — Persistent)                 │
+│              Host: dpg-d84sbagjo89c73bskf10-a.oregon-postgres.render.com│
+│              DB:   ai_apps_db_nzf4   Region: Oregon                     │
+│                                                                         │
+│  ┌─────────────────┐  ┌──────────────────────┐  ┌───────────────────┐  │
+│  │   qa_jobs       │  │  qa_stage_timings    │  │   qa_reviews      │  │
+│  │─────────────────│  │──────────────────────│  │───────────────────│  │
+│  │ pipeline_id PK  │  │ id  SERIAL PK        │  │ review_id  PK     │  │
+│  │ status          │  │ pipeline_id  FK       │  │ rating  1–5       │  │
+│  │ created_at TZ   │  │ stage_name           │  │ review_text       │  │
+│  │ updated_at TZ   │  │ duration_ms  FLOAT   │  │ use_case          │  │
+│  │ input_source    │  │ status               │  │ output_mode       │  │
+│  │ output_mode     │  │ created_at  TZ       │  │ job_id            │  │
+│  │ num_questions   │  └──────────────────────┘  │ created_at  TZ    │  │
+│  │ cached  BOOL    │                             │ sentiment         │  │
+│  │ error_message   │   Indexes:                  └───────────────────┘  │
+│  └─────────────────┘   idx_qa_jobs_status                               │
+│                         idx_qa_jobs_created_at                          │
+│                         idx_stage_pipeline_id                           │
+│                         idx_reviews_created_at                          │
+│                         idx_reviews_rating                              │
+└─────────────────────────────────────────────────────────────────────────┘
 ```
 
 ### LangGraph Pipeline Flow
@@ -355,6 +386,45 @@ All errors return `{ error_code, message, retry_after_seconds, debug_id }`.
 
 ---
 
+## Persistence & Sleep Prevention
+
+### Problem
+Render's free tier spins down web services after 15 minutes of inactivity. The first
+request after sleep incurs a 30–60 s cold-start delay. Additionally, the ephemeral
+filesystem means SQLite data (jobs, stage timings, reviews) is wiped on every restart,
+so the dashboard showed zeroes after a sleep cycle.
+
+### Solution
+
+#### 1. External Render PostgreSQL — persistent stats across restarts
+All job data is written to the external PostgreSQL instance
+(`dpg-d84sbagjo89c73bskf10-a.oregon-postgres.render.com`) via `api/database.py`.
+The connection uses `sslmode=require` as mandated by Render's external DB policy.
+
+| Table | Purpose |
+|---|---|
+| `qa_jobs` | Every pipeline run — status, mode, duration, cached flag |
+| `qa_stage_timings` | Per-stage latency (ingestion / retrieval / generation / output) |
+| `qa_reviews` | User star ratings + free-text feedback |
+
+SQLite (`api/jobs.db`) is kept as an in-process cache for jobs created in the
+current server session. Dashboard endpoints always read from PostgreSQL.
+
+#### 2. Keep-alive pinger — prevents cold starts
+A daemon thread (`_keep_alive_pinger`) starts at server startup and pings
+`GET /health` every 10 minutes using Render's automatically-set
+`RENDER_EXTERNAL_URL` environment variable. This keeps the HTTP dyno warm and
+eliminates the cold-start delay for users. The thread is completely dormant in
+local development (env var is not set outside Render).
+
+#### 3. Job status PostgreSQL fallback — previous jobs survive restarts
+The `/api/qa/status/{pipeline_id}` and download endpoints first check SQLite
+(fast, in-process). On a miss — which always happens after a Render restart —
+they fall back to PostgreSQL, so users can always retrieve results from previous
+sessions.
+
+---
+
 ## Dashboard & Observability
 
 The built-in dashboard (click **Dashboard** tab) shows:
@@ -427,17 +497,22 @@ Run full pipeline → store in Redis + Memory LRU
 ### Environment Variables Summary (Render)
 
 ```yaml
-GROQ_API_KEY:          <secret>
+GROQ_API_KEY:          <secret — set in Render dashboard>
 GROQ_MODEL:            llama-3.3-70b-versatile
 GROQ_FALLBACK_MODEL:   llama-3.1-8b-instant
 REDIS_URL:             redis://red-d836e2t7vvec73938sl0:6379
-DATABASE_URL:          <postgres connection string>
-IDENTITY_HMAC_SECRET:  <secret>
-CORS_ALLOWED_ORIGIN:   https://your-app.vercel.app
+DATABASE_URL:          postgresql://<user>:<pass>@<host>/<db>?sslmode=require
+IDENTITY_HMAC_SECRET:  <secret — set in Render dashboard>
+CORS_ALLOWED_ORIGIN:   https://frontend-six-red-29.vercel.app
 RATE_LIMIT_MAX:        10
 BURST_MAX:             3
 NUM_QUESTIONS:         10
 ```
+
+> `DATABASE_URL` is now set in `.env` and `render.yaml` — pointing to the external
+> Render PostgreSQL instance. Stats persist across sleep cycles and restarts.
+> `RENDER_EXTERNAL_URL` is injected automatically by Render and used by the
+> keep-alive pinger — no manual configuration needed.
 
 ---
 

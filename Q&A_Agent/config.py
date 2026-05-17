@@ -81,10 +81,7 @@ CACHE_TTL: int = int(os.getenv("CACHE_TTL", "86400"))  # 24 hours
 
 # ─── PostgreSQL (job persistence + dashboard analytics) ───────────────────────
 # When DATABASE_URL is empty, the server falls back to SQLite.
-DATABASE_URL: str = os.getenv(
-    "DATABASE_URL",
-    "postgresql://postgres:postgres@localhost:5432/postgres",
-)
+DATABASE_URL: str = os.getenv("DATABASE_URL", "")
 
 # ─── Rate limiting ─────────────────────────────────────────────────────────────
 RATE_LIMIT_MAX:    int   = int(os.getenv("RATE_LIMIT_MAX",    "10"))

@@ -19,6 +19,7 @@ Security & reliability features:
 
 import logging
 import math
+import os
 import sqlite3
 import threading
 import time
@@ -554,20 +555,24 @@ async def get_job_status(request: Request, pipeline_id: str) -> JobStatusRespons
     with _jobs_lock:
         job = _get_job(pipeline_id)
 
+    # SQLite is ephemeral on Render — fall back to PostgreSQL for jobs from
+    # previous server instances (survives restarts and sleep/wake cycles).
+    if not job:
+        job = get_job(pipeline_id)
+
     if not job:
         raise HTTPException(status_code=404, detail="Job not found")
 
     # Calculate queue position
     queue_position = None
     if job["status"] == "queued":
-        # This is a rough estimate; in production use a proper queue
         queue_position = _job_queue.qsize()
 
     return JobStatusResponse(
         pipeline_id=pipeline_id,
         status=job["status"],
-        created_at=job["created_at"],
-        updated_at=job["updated_at"],
+        created_at=str(job["created_at"]),
+        updated_at=str(job["updated_at"]),
         input_source=job["input_source"],
         output_mode=job.get("output_mode", "questions"),
         result_markdown=job.get("result_markdown"),
@@ -666,6 +671,8 @@ async def download_result(request: Request, pipeline_id: str):
     """Download the generated PDF for a completed job."""
     with _jobs_lock:
         job = _get_job(pipeline_id)
+    if not job:
+        job = get_job(pipeline_id)
 
     if not job:
         raise HTTPException(status_code=404, detail="Job not found")
@@ -697,6 +704,8 @@ async def download_file(request: Request, pipeline_id: str, filename: str):
     """Download a file (PDF or other) from a completed job."""
     with _jobs_lock:
         job = _get_job(pipeline_id)
+    if not job:
+        job = get_job(pipeline_id)
 
     if not job:
         raise HTTPException(status_code=404, detail="Job not found")
@@ -711,6 +720,30 @@ async def download_file(request: Request, pipeline_id: str, filename: str):
         filename=filename,
         media_type="application/pdf",
     )
+
+
+# ── Keep-alive pinger (prevents Render free-tier sleep) ───────────────────────
+
+def _keep_alive_pinger() -> None:
+    """
+    Ping own /health every 10 minutes so Render doesn't spin the service down.
+    Only runs when RENDER_EXTERNAL_URL is set (i.e. on Render, not local dev).
+    First ping is delayed 60 s so the server is fully up before we hit it.
+    """
+    import urllib.request as _urlreq
+    app_url = os.getenv("RENDER_EXTERNAL_URL", "").rstrip("/")
+    if not app_url:
+        return
+    ping_url = f"{app_url}/health"
+    logger.info("Keep-alive pinger started → %s (every 10 min)", ping_url)
+    time.sleep(60)   # wait for server to be fully ready
+    while True:
+        try:
+            with _urlreq.urlopen(ping_url, timeout=15) as resp:
+                logger.debug("Keep-alive ping OK (status %s)", resp.status)
+        except Exception as exc:
+            logger.warning("Keep-alive ping failed: %s", exc)
+        time.sleep(600)  # 10 minutes
 
 
 # ── Startup / Shutdown ────────────────────────────────────────────────────────
@@ -742,6 +775,10 @@ async def startup():
     _worker_thread = threading.Thread(target=_process_job_queue, daemon=True)
     _worker_thread.start()
     logger.info("Background worker thread started")
+
+    # Start keep-alive pinger (no-op locally; active on Render when env var is set)
+    pinger = threading.Thread(target=_keep_alive_pinger, daemon=True, name="keep-alive")
+    pinger.start()
 
 
 @app.on_event("shutdown")
