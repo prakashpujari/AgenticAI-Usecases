@@ -937,6 +937,55 @@ async def db_status(request: Request):
     }
 
 
+@app.get("/api/debug/langsmith", tags=["Dashboard"])
+async def langsmith_debug(request: Request):
+    """Diagnose LangSmith tracing setup on the live server."""
+    import os as _os
+
+    result: dict = {
+        "env_LANGCHAIN_TRACING_V2": _os.getenv("LANGCHAIN_TRACING_V2", "<not set>"),
+        "env_LANGCHAIN_API_KEY_set": bool(_os.getenv("LANGCHAIN_API_KEY")),
+        "env_LANGCHAIN_API_KEY_prefix": (_os.getenv("LANGCHAIN_API_KEY") or "")[:12] or "<not set>",
+        "env_LANGCHAIN_PROJECT": _os.getenv("LANGCHAIN_PROJECT", "<not set>"),
+        "config_tracing_v2": config.LANGCHAIN_TRACING_V2,
+        "config_api_key_set": bool(config.LANGCHAIN_API_KEY),
+        "config_project": config.LANGCHAIN_PROJECT,
+        "langsmith_active_at_startup": _langsmith_active,
+    }
+
+    # Re-run setup to see current state
+    try:
+        from observability.langsmith_tracer import setup_langsmith
+        active = setup_langsmith()
+        result["setup_langsmith_now"] = active
+    except Exception as exc:
+        result["setup_langsmith_error"] = str(exc)
+
+    # Test connectivity
+    try:
+        from langsmith import Client
+        client = Client(
+            api_url=config.LANGCHAIN_ENDPOINT,
+            api_key=config.LANGCHAIN_API_KEY,
+        )
+        projects = [p.name for p in client.list_projects(limit=5)]
+        result["connectivity"] = "ok"
+        result["projects"] = projects
+    except Exception as exc:
+        result["connectivity"] = "failed"
+        result["connectivity_error"] = str(exc)[:200]
+
+    # Check traceable is real langsmith, not no-op
+    try:
+        from src.generation.qa_generator import traceable as _tr
+        result["traceable_module"] = getattr(_tr, "__module__", str(_tr))
+        result["traceable_is_langsmith"] = "langsmith" in getattr(_tr, "__module__", "")
+    except Exception as exc:
+        result["traceable_check_error"] = str(exc)
+
+    return result
+
+
 @app.get("/api/debug/youtube", tags=["Dashboard"])
 async def youtube_debug(request: Request, videoId: str = "arj7oStGLkU"):
     """

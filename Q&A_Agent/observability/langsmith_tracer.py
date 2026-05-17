@@ -91,30 +91,33 @@ def setup_langsmith() -> bool:
         True if tracing is successfully enabled, False otherwise.
     """
     # ── Step 1: Push config values into os.environ ────────────────────────────
-    # load_dotenv() already set these if a .env file was present.  We
-    # explicitly write them again here so that dynamically-generated values
-    # (e.g. from a secrets manager in production) override stale env vars.
-    os.environ["LANGCHAIN_TRACING_V2"] = "true" if config.LANGCHAIN_TRACING_V2 else "false"
-    os.environ["LANGCHAIN_PROJECT"]    = config.LANGCHAIN_PROJECT
-    os.environ["LANGCHAIN_ENDPOINT"]   = config.LANGCHAIN_ENDPOINT
+    # Read fresh from os.environ each call so that env vars added in the Render
+    # dashboard after the last deploy are picked up without a redeploy.
+    tracing_on = os.getenv("LANGCHAIN_TRACING_V2", "true" if config.LANGCHAIN_TRACING_V2 else "false").lower() in ("true", "1")
+    api_key     = os.getenv("LANGCHAIN_API_KEY",    config.LANGCHAIN_API_KEY)
+    project     = os.getenv("LANGCHAIN_PROJECT",    config.LANGCHAIN_PROJECT)
+    endpoint    = os.getenv("LANGCHAIN_ENDPOINT",   config.LANGCHAIN_ENDPOINT)
 
-    if config.LANGCHAIN_API_KEY:
-        os.environ["LANGCHAIN_API_KEY"] = config.LANGCHAIN_API_KEY
+    os.environ["LANGCHAIN_TRACING_V2"] = "true" if tracing_on else "false"
+    os.environ["LANGCHAIN_PROJECT"]    = project
+    os.environ["LANGCHAIN_ENDPOINT"]   = endpoint
+    if api_key:
+        os.environ["LANGCHAIN_API_KEY"] = api_key
 
     # ── Step 2: Early-exit if tracing is disabled ─────────────────────────────
-    if not config.LANGCHAIN_TRACING_V2:
+    if not tracing_on:
         logger.info(
             "LangSmith tracing DISABLED "
-            "(set LANGCHAIN_TRACING_V2=true in .env to enable)."
+            "(set LANGCHAIN_TRACING_V2=true to enable)."
         )
         return False
 
     # ── Step 3: Check API key is present ──────────────────────────────────────
-    if not config.LANGCHAIN_API_KEY:
+    if not api_key:
         logger.warning(
             "LangSmith tracing is enabled (LANGCHAIN_TRACING_V2=true) but "
-            "LANGCHAIN_API_KEY is not set.  Traces will not be uploaded.\n"
-            "  → Set LANGCHAIN_API_KEY in your .env file."
+            "LANGCHAIN_API_KEY is not set — traces will not be uploaded.\n"
+            "  → Set LANGCHAIN_API_KEY in the Render dashboard → Environment."
         )
         return False
 
@@ -122,21 +125,16 @@ def setup_langsmith() -> bool:
     try:
         from langsmith import Client  # deferred import — langsmith may not be installed
 
-        client = Client(
-            api_url=config.LANGCHAIN_ENDPOINT,
-            api_key=config.LANGCHAIN_API_KEY,
-        )
-        # list_projects() is the cheapest read-only call; we only take the
-        # first page to avoid large payloads.
+        client = Client(api_url=endpoint, api_key=api_key)
         list(client.list_projects(limit=1))
 
         logger.info(
             "LangSmith tracing ENABLED  project='%s'  endpoint='%s'",
-            config.LANGCHAIN_PROJECT,
-            config.LANGCHAIN_ENDPOINT,
+            project,
+            endpoint,
             extra={
-                "langsmith_project":  config.LANGCHAIN_PROJECT,
-                "langsmith_endpoint": config.LANGCHAIN_ENDPOINT,
+                "langsmith_project":  project,
+                "langsmith_endpoint": endpoint,
             },
         )
         return True
