@@ -137,7 +137,12 @@ def _build_gemini_llm():
 
 
 def _build_hf_llm():
-    """Hugging Face Serverless Inference — free with a read-only HF token."""
+    """
+    Hugging Face Serverless Inference.
+    Requires a token with 'Make calls to Inference Providers' permission.
+    Generate one at https://huggingface.co/settings/tokens → New token →
+    tick 'Make calls to the serverless Inference API'.
+    """
     from langchain_huggingface import ChatHuggingFace, HuggingFaceEndpoint
     endpoint = HuggingFaceEndpoint(
         repo_id=config.HF_MODEL,
@@ -145,33 +150,41 @@ def _build_hf_llm():
         max_new_tokens=4096,
         temperature=config.TEMPERATURE,
         task="text-generation",
+        provider="hf-inference",
     )
     return ChatHuggingFace(llm=endpoint)
 
 
 def _providers() -> list[tuple[str, str, callable]]:
     """
-    Return ordered provider list: multiple Groq models, then Gemini, then HuggingFace.
+    Provider order (per user preference):
+      1. Google Gemini  — if GEMINI_API_KEY is set
+      2. Groq models    — 4 independent quotas rotated in sequence
+      3. HuggingFace    — if HF_API_KEY is set
 
     Each Groq model has an INDEPENDENT daily/per-minute quota so rotating
     through them maximises capacity before falling to external providers.
     """
+    providers = []
+
+    # ── 1. Gemini first ───────────────────────────────────────────────────────
+    if config.GEMINI_API_KEY:
+        providers.append(("gemini", config.GEMINI_MODEL, _build_gemini_llm))
+
+    # ── 2. Groq models (4 independent quotas) ────────────────────────────────
     groq_models = [
-        config.GROQ_MODEL,           # primary (e.g. llama-3.3-70b-versatile)
-        config.GROQ_FALLBACK_MODEL,  # first fallback (e.g. llama-3.1-8b-instant)
-        "gemma2-9b-it",              # higher Groq rate limits than Llama 70B
-        "llama-3.2-3b-preview",      # smallest / highest Groq quota
+        config.GROQ_MODEL,           # e.g. llama-3.3-70b-versatile
+        config.GROQ_FALLBACK_MODEL,  # e.g. llama-3.1-8b-instant
+        "gemma2-9b-it",
+        "llama-3.2-3b-preview",
     ]
     seen: set[str] = set()
-    providers = []
     for m in groq_models:
         if m and m not in seen:
             seen.add(m)
             providers.append(("groq", m, lambda _m=m: _build_groq_llm(_m)))
 
-    if config.GEMINI_API_KEY:
-        providers.append(("gemini", config.GEMINI_MODEL, _build_gemini_llm))
-
+    # ── 3. HuggingFace last ───────────────────────────────────────────────────
     if config.HF_API_KEY:
         providers.append(("huggingface", config.HF_MODEL, _build_hf_llm))
 
