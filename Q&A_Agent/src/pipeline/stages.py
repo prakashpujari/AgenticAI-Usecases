@@ -53,7 +53,7 @@ from typing import Any
 
 import config
 from observability.metrics import PipelineMetrics
-from src.generation.qa_generator import _traceable as traceable, summarize_text
+from src.generation.qa_generator import traceable, summarize_text
 from src.ingestion.document_loader import load_document
 from src.output.output_formatter import (
     format_questions_to_markdown,

@@ -75,23 +75,17 @@ def _parse_retry_after(exc: Exception) -> float | None:
     return None
 
 
-def _traceable(*args, **kwargs):
-    """No-op replacement for @langsmith.traceable when tracing is disabled."""
-    def decorator(fn):
-        return fn
-    if len(args) == 1 and callable(args[0]):
-        return args[0]   # @_traceable without arguments
-    return decorator
-
-
-import os as _os
-if _os.getenv("LANGCHAIN_TRACING_V2", "false").lower() in ("true", "1"):
-    try:
-        from langsmith import traceable
-    except Exception:
-        traceable = _traceable
-else:
-    traceable = _traceable
+# langsmith.traceable checks LANGCHAIN_TRACING_V2 at call time (not import time),
+# so it correctly activates whenever the env var is set — even if it was set after
+# the module was first imported (e.g. by setup_langsmith() in server.py).
+try:
+    from langsmith import traceable
+except ImportError:
+    def traceable(*args, **kwargs):  # type: ignore[misc]
+        """No-op when langsmith is not installed."""
+        def decorator(fn):
+            return fn
+        return args[0] if args and callable(args[0]) else decorator
 
 import config
 from observability.logger import get_logger
