@@ -45,6 +45,57 @@ function validateFileClient(f) {
   return null
 }
 
+function YouTubeTranscriptPaste({ videoUrl, onTranscript, onDismiss }) {
+  const [text, setText] = useState('')
+  const videoId = extractVideoId(videoUrl || '') || ''
+  const ytUrl = videoId
+    ? `https://www.youtube.com/watch?v=${videoId}`
+    : 'https://www.youtube.com'
+
+  return (
+    <div className="mt-4 p-4 bg-amber-50 border border-amber-300 rounded-md space-y-3">
+      <div className="flex justify-between items-start">
+        <p className="text-sm font-semibold text-amber-900">
+          YouTube transcripts are blocked on cloud servers
+        </p>
+        <button type="button" onClick={onDismiss} className="text-amber-400 hover:text-amber-600 text-lg leading-none">×</button>
+      </div>
+
+      <p className="text-xs text-amber-800">
+        YouTube prevents servers from fetching transcripts. Copy it directly from YouTube instead:
+      </p>
+
+      <ol className="text-xs text-amber-800 space-y-1 list-decimal list-inside">
+        <li>
+          <a href={ytUrl} target="_blank" rel="noopener noreferrer"
+             className="underline font-medium">Open the YouTube video</a>
+          {' '}in your browser
+        </li>
+        <li>Click <strong>⋯</strong> (three dots) below the video → <strong>Show transcript</strong></li>
+        <li>Click <strong>Toggle timestamps</strong> (top-right of the transcript panel) to hide timestamps</li>
+        <li>Select all text in the transcript panel, copy, and paste below:</li>
+      </ol>
+
+      <textarea
+        value={text}
+        onChange={e => setText(e.target.value)}
+        rows={5}
+        placeholder="Paste the YouTube transcript here…"
+        className="w-full text-xs border border-amber-300 rounded px-3 py-2 resize-y bg-white focus:outline-none focus:ring-2 focus:ring-amber-400"
+      />
+
+      <button
+        type="button"
+        disabled={text.trim().length < 20}
+        onClick={() => onTranscript(text.trim())}
+        className="w-full py-2 px-4 bg-amber-600 text-white text-sm font-medium rounded hover:bg-amber-700 disabled:opacity-40 disabled:cursor-not-allowed transition"
+      >
+        Generate from pasted transcript
+      </button>
+    </div>
+  )
+}
+
 export default function DocumentUpload({ onJobSubmitted }) {
   const [inputMode, setInputMode] = useState('file')
   const [outputMode, setOutputMode] = useState('questions')
@@ -337,55 +388,42 @@ export default function DocumentUpload({ onJobSubmitted }) {
           />
         )}
 
-        {/* YouTube blocked — show setup guide */}
+        {/* YouTube blocked — paste transcript inline */}
         {error === 'YOUTUBE_BLOCKED' && (
-          <div className="mt-4 p-4 bg-amber-50 border border-amber-300 rounded-md space-y-3">
-            <p className="text-sm font-semibold text-amber-900">
-              YouTube transcripts are blocked from our servers.
-            </p>
-            <p className="text-xs text-amber-800">
-              YouTube blocks transcript requests from cloud hosting IPs.
-              Fix it in 3 steps — one time only:
-            </p>
-            <ol className="text-xs text-amber-800 list-decimal list-inside space-y-1">
-              <li>
-                Install{' '}
-                <a
-                  href="https://chrome.google.com/webstore/detail/get-cookiestxt-locally/cclelndahbckbenkjhflpdbgdldlbecc"
-                  target="_blank" rel="noopener noreferrer"
-                  className="underline font-medium"
-                >
-                  "Get cookies.txt LOCALLY"
-                </a>{' '}
-                Chrome extension
-              </li>
-              <li>Visit youtube.com (stay logged in), click the extension → Export</li>
-              <li>
-                Run this in PowerShell to get the value to paste:
-                <code className="block mt-1 bg-amber-100 px-2 py-1 rounded font-mono text-xs break-all">
-                  [Convert]::ToBase64String([IO.File]::ReadAllBytes("C:\path\to\cookies.txt"))
-                </code>
-              </li>
-              <li>
-                Paste it in{' '}
-                <a href="https://dashboard.render.com" target="_blank" rel="noopener noreferrer" className="underline font-medium">
-                  Render dashboard
-                </a>
-                {' '}→ qa-agent-api → Environment → Add variable:{' '}
-                <code className="font-mono">YOUTUBE_COOKIES</code>
-              </li>
-            </ol>
-            <p className="text-xs text-amber-700 font-medium">
-              Or: paste the video script as a .txt file and upload it instead.
-            </p>
-            <button
-              type="button"
-              onClick={() => setError(null)}
-              className="text-xs text-amber-700 underline"
-            >
-              Dismiss
-            </button>
-          </div>
+          <YouTubeTranscriptPaste
+            videoUrl={source}
+            onTranscript={(text) => {
+              setError(null)
+              // Submit the pasted transcript as a virtual .txt file
+              ;(async () => {
+                setLoading(true)
+                setLoadingMsg('Submitting transcript...')
+                try {
+                  const fingerprint = await getDeviceFingerprint()
+                  const blob = new Blob([text], { type: 'text/plain' })
+                  const vid = extractVideoId(source) || 'youtube'
+                  const txtFile = new File([blob], `${vid}.txt`, { type: 'text/plain' })
+                  const fd = new FormData()
+                  fd.append('file', txtFile)
+                  fd.append('num_questions', numQuestions)
+                  fd.append('output_mode', outputMode)
+                  const res = await axios.post('/api/qa/generate', fd, {
+                    headers: { 'X-Device-Fingerprint': fingerprint, 'Content-Type': 'multipart/form-data' },
+                  })
+                  onJobSubmitted(res.data.pipeline_id)
+                  setSource('')
+                  setNumQuestions(5)
+                } catch (err) {
+                  const p = parseApiError(err)
+                  setError(p.message)
+                } finally {
+                  setLoading(false)
+                  setLoadingMsg('Submitting...')
+                }
+              })()
+            }}
+            onDismiss={() => setError(null)}
+          />
         )}
 
         {/* General error */}
