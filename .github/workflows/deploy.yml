@@ -1,0 +1,68 @@
+name: Deploy
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "Q&A_Agent/**"
+
+jobs:
+  # ── Backend → Render ──────────────────────────────────────────────────────────
+  deploy-backend:
+    name: Deploy Backend (Render)
+    runs-on: ubuntu-latest
+    # Run when any backend file changes (everything except the frontend directory)
+    if: |
+      contains(toJson(github.event.commits), 'Q&A_Agent/') &&
+      !startsWith(github.event.head_commit.message, 'skip-render')
+    steps:
+      - name: Trigger Render deploy
+        run: |
+          echo "Triggering Render deploy..."
+          RESPONSE=$(curl -s --fail-with-body \
+            "${{ secrets.RENDER_DEPLOY_HOOK_URL }}" \
+            -X POST)
+          echo "$RESPONSE"
+          DEPLOY_ID=$(echo "$RESPONSE" | python3 -c "import sys,json; d=json.load(sys.stdin); print(d.get('deploy',{}).get('id','unknown'))")
+          STATUS=$(echo "$RESPONSE" | python3 -c "import sys,json; d=json.load(sys.stdin); print(d.get('deploy',{}).get('status','unknown'))")
+          echo "Deploy ID : $DEPLOY_ID"
+          echo "Status    : $STATUS"
+
+  # ── Frontend → Vercel ─────────────────────────────────────────────────────────
+  deploy-frontend:
+    name: Deploy Frontend (Vercel)
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: Q&A_Agent/frontend
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+          cache-dependency-path: Q&A_Agent/frontend/package-lock.json
+
+      - name: Install Vercel CLI
+        run: npm install -g vercel@latest
+
+      - name: Pull Vercel environment
+        run: vercel pull --yes --environment=production --token=${{ secrets.VERCEL_TOKEN }}
+        env:
+          VERCEL_ORG_ID: team_hcfVNWK0Y88WxzuplhzX8xIe
+          VERCEL_PROJECT_ID: prj_Ir9cK6DxnTuTnsbLSRfP2bfq4PfM
+
+      - name: Build
+        run: vercel build --prod --token=${{ secrets.VERCEL_TOKEN }}
+        env:
+          VERCEL_ORG_ID: team_hcfVNWK0Y88WxzuplhzX8xIe
+          VERCEL_PROJECT_ID: prj_Ir9cK6DxnTuTnsbLSRfP2bfq4PfM
+
+      - name: Deploy to production
+        run: vercel deploy --prebuilt --prod --token=${{ secrets.VERCEL_TOKEN }}
+        env:
+          VERCEL_ORG_ID: team_hcfVNWK0Y88WxzuplhzX8xIe
+          VERCEL_PROJECT_ID: prj_Ir9cK6DxnTuTnsbLSRfP2bfq4PfM
