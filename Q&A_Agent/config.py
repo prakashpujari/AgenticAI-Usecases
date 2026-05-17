@@ -84,8 +84,12 @@ EMBEDDING_MODEL: str = os.getenv("EMBEDDING_MODEL", "sentence-transformers/all-M
 #   3. Visit youtube.com, click the extension, export "Current site" cookies.
 #   4. Base64-encode the file:  base64 -w0 cookies.txt
 #   5. Set YOUTUBE_COOKIES in Render dashboard (Environment → Add variable).
-SUPADATA_API_KEY: str = os.getenv("SUPADATA_API_KEY", "")
-YOUTUBE_COOKIES: str  = os.getenv("YOUTUBE_COOKIES", "")
+SUPADATA_API_KEY: str  = os.getenv("SUPADATA_API_KEY", "")
+YOUTUBE_COOKIES: str   = os.getenv("YOUTUBE_COOKIES", "")
+# Option C — generic HTTP/SOCKS5 proxy for transcript fetching.
+# Format: "http://user:pass@host:port" or "socks5://host:port".
+# Used by both youtube-transcript-api and yt-dlp.
+YOUTUBE_PROXY_URL: str = os.getenv("YOUTUBE_PROXY_URL", "")
 
 # ─── Redis (rate limiting + response cache) ───────────────────────────────────
 # When REDIS_URL is empty the rate limiter falls back to in-memory counters

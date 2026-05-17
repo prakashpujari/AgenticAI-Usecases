@@ -44,6 +44,8 @@ services:
         sync: false                        # set manually in Render dashboard
       - key: YOUTUBE_COOKIES
         sync: false                        # set manually in Render dashboard
+      - key: YOUTUBE_PROXY_URL
+        sync: false                        # optional: socks5://host:port or http://user:pass@host:port
       # PostgreSQL — external Render DB for persistent stats (survives sleep/restart)
       - key: DATABASE_URL
         value: "postgresql://ai_apps_db_nzf4_user:upzKUnedEMR1EvhNJsiltS1SGnoBzE3F@dpg-d84sbagjo89c73bskf10-a.oregon-postgres.render.com/ai_apps_db_nzf4?sslmode=require"

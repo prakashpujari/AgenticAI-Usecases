@@ -341,14 +341,13 @@ def _fetch_transcript_session(video_id: str) -> str:
 
 def _fetch_transcript_third_party(video_id: str) -> str:
     """
-    Try free third-party YouTube transcript APIs that use residential-proxy
-    infrastructure, so they work from cloud servers (Render/AWS/GCP).
+    Try free third-party YouTube transcript APIs that work from cloud servers.
 
     Services tried in order:
-      1. Supadata.ai  — free 10k req/month; set SUPADATA_API_KEY env var.
-         Sign up at https://supadata.ai to get a key.
-      2. kome.ai      — community free tier, no key required.
-      3. Tactiq       — community endpoint, no key required.
+      1. Supadata.ai — free 10k req/month; set SUPADATA_API_KEY env var.
+         Sign up free at https://supadata.ai to get an API key.
+      2. Invidious instances — open-source YouTube proxy; tries several
+         public instances until one responds. No key needed.
     """
     import json as _json
     import urllib.request as _urlreq
@@ -358,71 +357,86 @@ def _fetch_transcript_third_party(video_id: str) -> str:
     errors: list[str] = []
 
     # ── 1. Supadata.ai ────────────────────────────────────────────────────────
+    # Supadata uses residential-proxy infrastructure so it works from Render.
+    # Without an API key the endpoint returns 401; key is required for service.
     supadata_key = config.SUPADATA_API_KEY
-    try:
-        encoded = quote(f"https://www.youtube.com/watch?v={video_id}")
-        api_url = (
-            f"https://api.supadata.ai/v1/youtube/transcript"
-            f"?url={encoded}&lang=en&text=true"
-        )
-        req = _urlreq.Request(api_url, headers={
-            "User-Agent": "Mozilla/5.0",
-            "Accept": "application/json",
-        })
-        if supadata_key:
-            req.add_header("x-api-key", supadata_key)
-        with _urlreq.urlopen(req, timeout=25) as resp:
-            data = _json.loads(resp.read())
-        content = data.get("content", "")
-        if isinstance(content, str) and len(content) > 50:
-            return content
-        if isinstance(content, list):
-            combined = " ".join(item.get("text", "") for item in content if isinstance(item, dict))
-            if len(combined) > 50:
-                return combined
-        errors.append(f"supadata: empty/unexpected response keys={list(data.keys())}")
-    except HTTPError as exc:
-        errors.append(f"supadata: HTTP {exc.code} ({exc.reason})")
-    except Exception as exc:
-        errors.append(f"supadata: {exc}")
+    if supadata_key:
+        try:
+            encoded = quote(f"https://www.youtube.com/watch?v={video_id}")
+            api_url = (
+                "https://api.supadata.ai/v1/youtube/transcript"
+                f"?url={encoded}&lang=en&text=true"
+            )
+            req = _urlreq.Request(api_url, headers={
+                "User-Agent": "Mozilla/5.0",
+                "Accept": "application/json",
+                "x-api-key": supadata_key,
+            })
+            with _urlreq.urlopen(req, timeout=25) as resp:
+                data = _json.loads(resp.read())
+            content = data.get("content", "")
+            if isinstance(content, str) and len(content) > 50:
+                return content
+            if isinstance(content, list):
+                combined = " ".join(
+                    item.get("text", "") for item in content if isinstance(item, dict)
+                )
+                if len(combined) > 50:
+                    return combined
+            errors.append(f"supadata: unexpected response keys={list(data.keys())}")
+        except HTTPError as exc:
+            errors.append(f"supadata: HTTP {exc.code}")
+        except Exception as exc:
+            errors.append(f"supadata: {exc}")
+    else:
+        errors.append("supadata: SUPADATA_API_KEY not set")
 
-    # ── 2. kome.ai community endpoint ─────────────────────────────────────────
-    try:
-        kome_url = f"https://kome.ai/api/tools/youtube-transcript?videoId={video_id}"
-        req2 = _urlreq.Request(kome_url, headers={
-            "User-Agent": "Mozilla/5.0",
-            "Accept": "application/json",
-            "Content-Type": "application/json",
-        }, method="POST",
-        data=_json.dumps({"videoId": video_id, "lang": "en"}).encode())
-        with _urlreq.urlopen(req2, timeout=20) as resp2:
-            data2 = _json.loads(resp2.read())
-        text2 = data2.get("transcript", data2.get("text", ""))
-        if isinstance(text2, str) and len(text2) > 50:
-            return text2
-        errors.append(f"kome: empty response keys={list(data2.keys())}")
-    except Exception as exc:
-        errors.append(f"kome: {exc}")
+    # ── 2. Invidious public instances ─────────────────────────────────────────
+    # Invidious proxies YouTube requests through its own servers.
+    # Tries several instances; skips any that fail or return no captions.
+    _INVIDIOUS_INSTANCES = [
+        "https://invidious.flokinet.to",
+        "https://invidious.perennialte.ch",
+        "https://invidious.protokolla.fi",
+        "https://invidious.lunar.icu",
+        "https://inv.nadeko.net",
+        "https://invidious.privacydev.net",
+    ]
+    for host in _INVIDIOUS_INSTANCES:
+        try:
+            # Step 1: get caption track list
+            list_url = f"{host}/api/v1/captions/{video_id}"
+            req_list = _urlreq.Request(list_url, headers={"User-Agent": "Mozilla/5.0"})
+            with _urlreq.urlopen(req_list, timeout=10) as r_list:
+                cap_list = _json.loads(r_list.read())
 
-    # ── 3. yt.lemnoslife.com no-key proxy ─────────────────────────────────────
-    try:
-        lemnos_url = (
-            f"https://yt.lemnoslife.com/noKey"
-            f"?part=transcript&videoId={video_id}"
-        )
-        req3 = _urlreq.Request(lemnos_url, headers={"User-Agent": "Mozilla/5.0"})
-        with _urlreq.urlopen(req3, timeout=20) as resp3:
-            data3 = _json.loads(resp3.read())
-        # Response: { "items": [{ "transcript": [{"text": "...", "start": 0}] }] }
-        items = data3.get("items", [])
-        if items and isinstance(items, list):
-            segments = items[0].get("transcript", [])
-            combined3 = " ".join(s.get("text", "") for s in segments if s.get("text"))
-            if len(combined3) > 50:
-                return combined3
-        errors.append(f"lemnoslife: empty/missing items in response")
-    except Exception as exc:
-        errors.append(f"lemnoslife: {exc}")
+            tracks = cap_list.get("captions", [])
+            if not tracks:
+                errors.append(f"invidious {host}: no caption tracks")
+                continue
+
+            # Prefer English auto-generated captions
+            en_track = (
+                next((t for t in tracks if "english" in t.get("label", "").lower()), None)
+                or tracks[0]
+            )
+            label = en_track.get("label", "")
+            from urllib.parse import quote as _q
+            dl_url = f"{host}/api/v1/captions/{video_id}?label={_q(label)}"
+            req_dl = _urlreq.Request(dl_url, headers={"User-Agent": "Mozilla/5.0"})
+            with _urlreq.urlopen(req_dl, timeout=15) as r_dl:
+                raw = r_dl.read().decode("utf-8", errors="replace")
+
+            # Invidious returns WebVTT
+            text = _parse_vtt(raw)
+            if len(text) > 50:
+                logger.info("Invidious transcript via %s (%d chars)", host, len(text))
+                return text
+            errors.append(f"invidious {host}: VTT parsed to empty")
+        except HTTPError as exc:
+            errors.append(f"invidious {host}: HTTP {exc.code}")
+        except Exception as exc:
+            errors.append(f"invidious {host}: {type(exc).__name__}: {exc!s:.60}")
 
     raise ValueError(f"All third-party transcript services failed: {errors}")
 
@@ -432,9 +446,24 @@ def _fetch_transcript_api(video_id: str) -> list:
     from youtube_transcript_api import YouTubeTranscriptApi  # type: ignore[import]
 
     cookies = _yt_cookies_file()
-    # cookies param added in newer versions; fall back gracefully if not supported
+    proxy_url = config.YOUTUBE_PROXY_URL
+
+    # Build kwargs — proxy_config and cookies both added in v1.x; fall back
+    # gracefully on TypeError so older installed versions still work.
+    kwargs: dict = {}
+    if proxy_url:
+        try:
+            from youtube_transcript_api.proxies import GenericProxyConfig  # type: ignore[import]
+            kwargs["proxy_config"] = GenericProxyConfig(
+                http_url=proxy_url, https_url=proxy_url
+            )
+        except ImportError:
+            pass
+    if cookies:
+        kwargs["cookies"] = cookies
+
     try:
-        api = YouTubeTranscriptApi(cookies=cookies) if cookies else YouTubeTranscriptApi()
+        api = YouTubeTranscriptApi(**kwargs)
     except TypeError:
         api = YouTubeTranscriptApi()
 
@@ -497,6 +526,9 @@ def _ydl_base_opts(tmpdir: str, *, audio: bool = False, subtitles: bool = False)
     cookies = _yt_cookies_file()
     if cookies:
         opts["cookiefile"] = cookies
+    proxy_url = config.YOUTUBE_PROXY_URL
+    if proxy_url:
+        opts["proxy"] = proxy_url
     return opts
 
 
@@ -709,15 +741,15 @@ def _load_youtube_transcript(url: str) -> str:
         return text
     except Exception as whisper_exc:  # noqa: BLE001
         logger.error("All YouTube transcript methods failed. Last error: %s", whisper_exc)
-        hint = (
-            " To enable YouTube support: sign up free at https://supadata.ai and set"
-            " SUPADATA_API_KEY in the Render dashboard (Environment → Add variable)."
-            if not config.SUPADATA_API_KEY else
-            " The video may be private, age-restricted, or have captions disabled."
-        )
-        raise ValueError(
-            "Could not fetch the YouTube transcript." + hint
-        ) from whisper_exc
+        if not config.SUPADATA_API_KEY:
+            hint = (
+                " To enable YouTube support from cloud servers, sign up free at"
+                " https://supadata.ai (10 000 requests/month) and set"
+                " SUPADATA_API_KEY in the Render dashboard → Environment → Add variable."
+            )
+        else:
+            hint = " The video may be private, age-restricted, or have captions disabled."
+        raise ValueError("Could not fetch the YouTube transcript." + hint) from whisper_exc
 
 
 def _load_media_with_openai(path: Path) -> str:
