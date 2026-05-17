@@ -72,13 +72,14 @@ GROQ_VISION_MODEL: str   = os.getenv("GROQ_VISION_MODEL", "meta-llama/llama-4-sc
 # Console) — AI Studio keys include the free tier quota automatically.
 # Free tier: 1 500 req/day, 15 req/min for gemini-2.0-flash.
 GEMINI_API_KEY: str  = os.getenv("GEMINI_API_KEY", "")
-GEMINI_MODEL: str    = os.getenv("GEMINI_MODEL", "gemini-2.0-flash")
+GEMINI_MODEL: str    = os.getenv("GEMINI_MODEL", "gemini-2.5-flash")
 
 # ── Hugging Face (secondary free fallback) ─────────────────────────────────────
-# Free Serverless Inference API — no credit card, just a HuggingFace account.
-# Get a token at https://huggingface.co/settings/tokens (read-only token).
+# Token must have 'Make calls to the serverless Inference API' permission.
+# Create at https://huggingface.co/settings/tokens → New token → Fine-grained
+# → tick 'Make calls to the serverless Inference API'.
 HF_API_KEY: str   = os.getenv("HF_API_KEY", "")
-HF_MODEL: str     = os.getenv("HF_MODEL", "mistralai/Mistral-7B-Instruct-v0.3")
+HF_MODEL: str     = os.getenv("HF_MODEL", "moonshotai/Kimi-K2-Instruct")
 
 # Embeddings use a local ONNX model via fastembed (Groq has no embedding API).
 EMBEDDING_MODEL: str = os.getenv("EMBEDDING_MODEL", "sentence-transformers/all-MiniLM-L6-v2")
