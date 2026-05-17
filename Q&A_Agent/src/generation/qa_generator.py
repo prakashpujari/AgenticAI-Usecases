@@ -136,21 +136,42 @@ def _build_gemini_llm():
     )
 
 
+def _hf_provider_for(model_id: str) -> str:
+    """Look up the live inference provider for a HuggingFace model."""
+    import urllib.request as _ur, json as _js
+    try:
+        req = _ur.Request(
+            f"https://huggingface.co/api/models/{model_id}?expand=inferenceProviderMapping",
+            headers={"Authorization": f"Bearer {config.HF_API_KEY}"},
+        )
+        with _ur.urlopen(req, timeout=10) as r:
+            info = _js.loads(r.read())
+        mapping = info.get("inferenceProviderMapping", {})
+        for provider, details in mapping.items():
+            if details.get("status") == "live":
+                return provider
+    except Exception:
+        pass
+    return "hf-inference"  # fallback
+
+
 def _build_hf_llm():
     """
-    Hugging Face Serverless Inference.
-    Requires a token with 'Make calls to Inference Providers' permission.
-    Generate one at https://huggingface.co/settings/tokens → New token →
-    tick 'Make calls to the serverless Inference API'.
+    Hugging Face Inference via the router (auto-detects provider per model).
+    Token MUST have 'Make calls to the serverless Inference API' permission.
+    Fix: huggingface.co/settings/tokens → New token (Fine-grained) →
+         Inference → tick 'Make calls to the serverless Inference API'.
     """
     from langchain_huggingface import ChatHuggingFace, HuggingFaceEndpoint
+    provider = _hf_provider_for(config.HF_MODEL)
+    logger.info("HuggingFace provider for %s: %s", config.HF_MODEL, provider)
     endpoint = HuggingFaceEndpoint(
         repo_id=config.HF_MODEL,
         huggingfacehub_api_token=config.HF_API_KEY,
         max_new_tokens=4096,
         temperature=config.TEMPERATURE,
         task="text-generation",
-        provider="hf-inference",
+        provider=provider,
     )
     return ChatHuggingFace(llm=endpoint)
 
