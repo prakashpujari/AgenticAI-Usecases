@@ -251,19 +251,58 @@ def _fetch_transcript_api(video_id: str) -> list:
     return list(t.fetch())
 
 
+def _ydl_base_opts(tmpdir: str, *, audio: bool = False, subtitles: bool = False) -> dict:
+    """
+    Return yt-dlp options that bypass cloud-IP bot-detection.
+
+    Key technique: player_skip=["webpage","configs"] makes yt-dlp call the
+    InnerTube API directly instead of fetching the YouTube watch page, which
+    often receives a bot-check response on Render / AWS / GCP cloud IPs.
+    tv_embedded is the least-restricted player client YouTube offers.
+    """
+    opts: dict = {
+        "quiet":       True,
+        "no_warnings": True,
+        "noplaylist":  True,
+        "extractor_args": {
+            "youtube": {
+                # tv_embedded → InnerTube call without watch-page bot-check
+                "player_client": ["tv_embedded", "mweb", "web"],
+                "player_skip":   ["webpage", "configs"],
+            }
+        },
+    }
+    if audio:
+        opts["format"] = (
+            "bestaudio[ext=m4a][filesize<24M]"
+            "/bestaudio[ext=webm][filesize<24M]"
+            "/bestaudio[filesize<24M]"
+            "/bestaudio"
+        )
+        opts["outtmpl"] = os.path.join(tmpdir, "audio.%(ext)s")
+    if subtitles:
+        opts.update({
+            "writeautomaticsub": True,
+            "writesubtitles":    True,
+            "skip_download":     True,
+            "subtitlesformat":   "vtt",
+            "subtitleslangs":    ["en", "en-US", "en-GB", "en.*"],
+            "outtmpl":           os.path.join(tmpdir, "%(id)s.%(ext)s"),
+        })
+    cookies = _yt_cookies_file()
+    if cookies:
+        opts["cookiefile"] = cookies
+    return opts
+
+
 def _fetch_transcript_ytdlp_whisper(url: str) -> str:
     """
     Download YouTube audio via yt-dlp and transcribe with Groq Whisper.
 
-    Why this works on cloud IPs (Render, AWS, GCP):
-      - YouTube's transcript/caption endpoints (/youtubei/v1/get_transcript,
-        /api/timedtext) are filtered by IP and return empty or 403 for
-        datacenter ranges.
-      - Audio streams are served from YouTube's googlevideo.com CDN, which
-        is NOT filtered by cloud-IP blocks — the same CDN used by all
-        YouTube users globally.
-    So yt-dlp can download the audio even when caption endpoints fail.
-    Groq Whisper then transcribes it in ~10-30 s.
+    Bypasses the watch-page bot-check (common on cloud IPs) by calling
+    YouTube's InnerTube API directly via tv_embedded player client.
+    Audio is then downloaded from googlevideo.com CDN (no IP filtering).
+    Groq Whisper transcribes in ~10-30 s.
     """
     try:
         import yt_dlp  # type: ignore[import]
@@ -276,23 +315,7 @@ def _fetch_transcript_ytdlp_whisper(url: str) -> str:
         )
 
     with tempfile.TemporaryDirectory() as tmpdir:
-        ydl_opts = {
-            # Default web client — android returns 0 audio-only formats.
-            # Prefer smallest m4a/webm within Groq Whisper's 25 MB cap.
-            "format": (
-                "bestaudio[ext=m4a][filesize<20M]"
-                "/bestaudio[ext=webm][filesize<20M]"
-                "/bestaudio[filesize<20M]"
-                "/bestaudio"
-            ),
-            "outtmpl":     os.path.join(tmpdir, "audio.%(ext)s"),
-            "quiet":       True,
-            "no_warnings": True,
-            "noplaylist":  True,
-        }
-        cookies = _yt_cookies_file()
-        if cookies:
-            ydl_opts["cookiefile"] = cookies
+        ydl_opts = _ydl_base_opts(tmpdir, audio=True)
 
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
             ydl.download([url])
@@ -324,37 +347,16 @@ def _fetch_transcript_ytdlp_whisper(url: str) -> str:
 
 def _fetch_transcript_ytdlp(url: str) -> str:
     """
-    Last-resort fallback: download auto-generated VTT subtitles via yt-dlp
-    using the Android player client (less blocked than web player on cloud IPs).
+    Download auto-generated VTT subtitles via yt-dlp.
+    Uses tv_embedded player + InnerTube direct call to bypass cloud-IP bot-check.
     """
     try:
         import yt_dlp  # type: ignore[import]
     except ImportError as exc:
-        raise ImportError(
-            "yt-dlp is required as a YouTube fallback. "
-            "Install with: pip install yt-dlp"
-        ) from exc
+        raise ImportError("yt-dlp is required. pip install yt-dlp") from exc
 
     with tempfile.TemporaryDirectory() as tmpdir:
-        ydl_opts = {
-            "writeautomaticsub": True,
-            "writesubtitles":    True,
-            "skip_download":     True,
-            "subtitlesformat":   "vtt",
-            "subtitleslangs":    ["en", "en-US", "en-GB", "en.*"],
-            "outtmpl":           os.path.join(tmpdir, "%(id)s.%(ext)s"),
-            "quiet":             True,
-            "no_warnings":       True,
-            "extractor_args": {
-                "youtube": {
-                    "player_client": ["android", "web"],
-                    "player_skip":   ["webpage"],
-                }
-            },
-        }
-        cookies = _yt_cookies_file()
-        if cookies:
-            ydl_opts["cookiefile"] = cookies
+        ydl_opts = _ydl_base_opts(tmpdir, subtitles=True)
 
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
             ydl.download([url])
