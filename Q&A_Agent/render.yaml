@@ -49,6 +49,15 @@ services:
       # PostgreSQL — external Render DB for persistent stats (survives sleep/restart)
       - key: DATABASE_URL
         value: "postgresql://ai_apps_db_nzf4_user:upzKUnedEMR1EvhNJsiltS1SGnoBzE3F@dpg-d84sbagjo89c73bskf10-a.oregon-postgres.render.com/ai_apps_db_nzf4?sslmode=require"
+      # LangSmith tracing — sign up free at https://smith.langchain.com
+      - key: LANGCHAIN_TRACING_V2
+        value: "true"
+      - key: LANGCHAIN_PROJECT
+        value: qa-agent
+      - key: LANGCHAIN_ENDPOINT
+        value: https://api.smith.langchain.com
+      - key: LANGCHAIN_API_KEY
+        sync: false                        # set manually in Render dashboard
       # CORS — set to your exact Vercel domain
       - key: CORS_ALLOWED_ORIGIN
         value: "https://frontend-six-red-29.vercel.app"
