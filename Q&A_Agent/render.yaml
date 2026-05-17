@@ -37,6 +37,11 @@ services:
       # Security — set a strong random secret in Render dashboard
       - key: IDENTITY_HMAC_SECRET
         sync: false
+      # YouTube cookies — base64-encoded Netscape cookies.txt from a logged-in
+      # YouTube session. Bypasses cloud-IP transcript blocks on Render.
+      # Generate: base64 -w0 cookies.txt  (export from browser with cookies.txt extension)
+      - key: YOUTUBE_COOKIES
+        sync: false                        # set manually in Render dashboard
       # PostgreSQL — external Render DB for persistent stats (survives sleep/restart)
       - key: DATABASE_URL
         value: "postgresql://ai_apps_db_nzf4_user:upzKUnedEMR1EvhNJsiltS1SGnoBzE3F@dpg-d84sbagjo89c73bskf10-a.oregon-postgres.render.com/ai_apps_db_nzf4?sslmode=require"

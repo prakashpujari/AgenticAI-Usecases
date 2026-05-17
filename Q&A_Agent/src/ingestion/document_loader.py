@@ -201,11 +201,32 @@ def _parse_vtt(vtt: str) -> str:
     return " ".join(lines)
 
 
+def _yt_cookies_file() -> str | None:
+    """
+    Decode YOUTUBE_COOKIES env var (base64 Netscape cookies.txt) to a temp
+    file and return its path, or None when the env var is unset.
+
+    Used by all three YouTube fallback layers so a single cookies export
+    bypasses YouTube's cloud-IP block for transcript API, yt-dlp VTT, and
+    yt-dlp audio download on Render / AWS / GCP.
+    """
+    import base64
+    raw = config.YOUTUBE_COOKIES.strip()
+    if not raw:
+        return None
+    cookies_path = Path(tempfile.gettempdir()) / "yt_cookies.txt"
+    if not cookies_path.exists():
+        cookies_path.write_bytes(base64.b64decode(raw))
+    return str(cookies_path)
+
+
 def _fetch_transcript_api(video_id: str) -> list:
     """Call youtube-transcript-api and return raw transcript items."""
     from youtube_transcript_api import YouTubeTranscriptApi  # type: ignore[import]
 
-    api = YouTubeTranscriptApi()
+    cookies = _yt_cookies_file()
+    api = YouTubeTranscriptApi(cookies=cookies) if cookies else YouTubeTranscriptApi()
+
     fetch_fn = getattr(api, "fetch", None)
     if callable(fetch_fn):
         return list(fetch_fn(video_id))
@@ -248,8 +269,8 @@ def _fetch_transcript_ytdlp_whisper(url: str) -> str:
 
     with tempfile.TemporaryDirectory() as tmpdir:
         ydl_opts = {
-            # Use default web client — android client returns 0 audio formats.
-            # Prefer smallest m4a/webm audio stream within Whisper's 25 MB cap.
+            # Default web client — android returns 0 audio-only formats.
+            # Prefer smallest m4a/webm within Groq Whisper's 25 MB cap.
             "format": (
                 "bestaudio[ext=m4a][filesize<20M]"
                 "/bestaudio[ext=webm][filesize<20M]"
@@ -261,6 +282,9 @@ def _fetch_transcript_ytdlp_whisper(url: str) -> str:
             "no_warnings": True,
             "noplaylist":  True,
         }
+        cookies = _yt_cookies_file()
+        if cookies:
+            ydl_opts["cookiefile"] = cookies
 
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
             ydl.download([url])
@@ -313,20 +337,16 @@ def _fetch_transcript_ytdlp(url: str) -> str:
             "outtmpl":           os.path.join(tmpdir, "%(id)s.%(ext)s"),
             "quiet":             True,
             "no_warnings":       True,
-            # Android player client is less filtered on cloud/datacenter IPs
             "extractor_args": {
                 "youtube": {
                     "player_client": ["android", "web"],
                     "player_skip":   ["webpage"],
                 }
             },
-            "http_headers": {
-                "User-Agent": (
-                    "com.google.android.youtube/19.09.37 "
-                    "(Linux; U; Android 11) gzip"
-                ),
-            },
         }
+        cookies = _yt_cookies_file()
+        if cookies:
+            ydl_opts["cookiefile"] = cookies
 
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
             ydl.download([url])
@@ -439,10 +459,16 @@ def _load_youtube_transcript(url: str) -> str:
         return text
     except Exception as whisper_exc:  # noqa: BLE001
         logger.error("All YouTube transcript methods failed. Last error: %s", whisper_exc)
+        cookies_hint = (
+            "" if config.YOUTUBE_COOKIES else
+            " Set the YOUTUBE_COOKIES env var (base64 Netscape cookies.txt)"
+            " in the Render dashboard to enable authenticated access."
+        )
         raise ValueError(
-            "Could not fetch the YouTube transcript.\n"
-            "Possible reasons: video is private/age-restricted, or captions are disabled.\n"
-            "Workaround: paste the video script as a .txt file and upload it instead."
+            "Could not fetch the YouTube transcript."
+            " The video may be private, age-restricted, or have captions disabled."
+            + cookies_hint
+            + " Alternative: paste the transcript as a .txt file and upload it."
         ) from whisper_exc
 
 
