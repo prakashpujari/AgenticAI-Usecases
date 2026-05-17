@@ -70,17 +70,22 @@ GROQ_VISION_MODEL: str   = os.getenv("GROQ_VISION_MODEL", "meta-llama/llama-4-sc
 # Embeddings use a local ONNX model via fastembed (Groq has no embedding API).
 EMBEDDING_MODEL: str = os.getenv("EMBEDDING_MODEL", "sentence-transformers/all-MiniLM-L6-v2")
 
-# ─── YouTube cookies (bypass cloud-IP transcript block) ───────────────────────
-# Render/AWS datacenter IPs are blocked by YouTube for transcript and yt-dlp
-# requests. Providing cookies from a logged-in YouTube session bypasses this.
+# ─── YouTube transcript (bypass cloud-IP block) ───────────────────────────────
+# Render/AWS datacenter IPs are blocked by YouTube for transcript requests.
 #
-# How to generate:
+# Option A — Supadata.ai (recommended, easiest):
+#   1. Sign up free at https://supadata.ai  (10 000 requests/month free tier).
+#   2. Copy your API key from the dashboard.
+#   3. Set SUPADATA_API_KEY in the Render dashboard (Environment → Add variable).
+#
+# Option B — YouTube cookies (advanced):
 #   1. Log into YouTube in Chrome/Firefox.
 #   2. Install the "Get cookies.txt LOCALLY" browser extension.
 #   3. Visit youtube.com, click the extension, export "Current site" cookies.
 #   4. Base64-encode the file:  base64 -w0 cookies.txt
 #   5. Set YOUTUBE_COOKIES in Render dashboard (Environment → Add variable).
-YOUTUBE_COOKIES: str = os.getenv("YOUTUBE_COOKIES", "")
+SUPADATA_API_KEY: str = os.getenv("SUPADATA_API_KEY", "")
+YOUTUBE_COOKIES: str  = os.getenv("YOUTUBE_COOKIES", "")
 
 # ─── Redis (rate limiting + response cache) ───────────────────────────────────
 # When REDIS_URL is empty the rate limiter falls back to in-memory counters

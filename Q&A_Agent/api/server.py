@@ -967,6 +967,20 @@ async def youtube_debug(request: Request, videoId: str = "arj7oStGLkU"):
         except Exception as exc:
             result["cookies_decode_error"] = str(exc)
 
+    # ── 1b. Supadata API key ──────────────────────────────────────────────────
+    result["supadata_key_set"] = bool(config.SUPADATA_API_KEY)
+
+    # ── 1c. Third-party transcript API test ───────────────────────────────────
+    try:
+        from src.ingestion.document_loader import _fetch_transcript_third_party
+        text = _fetch_transcript_third_party(videoId)
+        result["third_party_status"] = "ok"
+        result["third_party_chars"] = len(text)
+        result["third_party_preview"] = text[:120]
+    except Exception as exc:
+        result["third_party_status"] = "failed"
+        result["third_party_error"] = str(exc)[:300]
+
     # ── 2. Layer 1: youtube-transcript-api ────────────────────────────────────
     try:
         from youtube_transcript_api import YouTubeTranscriptApi

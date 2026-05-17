@@ -339,6 +339,94 @@ def _fetch_transcript_session(video_id: str) -> str:
     return " ".join(texts)
 
 
+def _fetch_transcript_third_party(video_id: str) -> str:
+    """
+    Try free third-party YouTube transcript APIs that use residential-proxy
+    infrastructure, so they work from cloud servers (Render/AWS/GCP).
+
+    Services tried in order:
+      1. Supadata.ai  — free 10k req/month; set SUPADATA_API_KEY env var.
+         Sign up at https://supadata.ai to get a key.
+      2. kome.ai      — community free tier, no key required.
+      3. Tactiq       — community endpoint, no key required.
+    """
+    import json as _json
+    import urllib.request as _urlreq
+    from urllib.error import HTTPError
+    from urllib.parse import quote
+
+    errors: list[str] = []
+
+    # ── 1. Supadata.ai ────────────────────────────────────────────────────────
+    supadata_key = config.SUPADATA_API_KEY
+    try:
+        encoded = quote(f"https://www.youtube.com/watch?v={video_id}")
+        api_url = (
+            f"https://api.supadata.ai/v1/youtube/transcript"
+            f"?url={encoded}&lang=en&text=true"
+        )
+        req = _urlreq.Request(api_url, headers={
+            "User-Agent": "Mozilla/5.0",
+            "Accept": "application/json",
+        })
+        if supadata_key:
+            req.add_header("x-api-key", supadata_key)
+        with _urlreq.urlopen(req, timeout=25) as resp:
+            data = _json.loads(resp.read())
+        content = data.get("content", "")
+        if isinstance(content, str) and len(content) > 50:
+            return content
+        if isinstance(content, list):
+            combined = " ".join(item.get("text", "") for item in content if isinstance(item, dict))
+            if len(combined) > 50:
+                return combined
+        errors.append(f"supadata: empty/unexpected response keys={list(data.keys())}")
+    except HTTPError as exc:
+        errors.append(f"supadata: HTTP {exc.code} ({exc.reason})")
+    except Exception as exc:
+        errors.append(f"supadata: {exc}")
+
+    # ── 2. kome.ai community endpoint ─────────────────────────────────────────
+    try:
+        kome_url = f"https://kome.ai/api/tools/youtube-transcript?videoId={video_id}"
+        req2 = _urlreq.Request(kome_url, headers={
+            "User-Agent": "Mozilla/5.0",
+            "Accept": "application/json",
+            "Content-Type": "application/json",
+        }, method="POST",
+        data=_json.dumps({"videoId": video_id, "lang": "en"}).encode())
+        with _urlreq.urlopen(req2, timeout=20) as resp2:
+            data2 = _json.loads(resp2.read())
+        text2 = data2.get("transcript", data2.get("text", ""))
+        if isinstance(text2, str) and len(text2) > 50:
+            return text2
+        errors.append(f"kome: empty response keys={list(data2.keys())}")
+    except Exception as exc:
+        errors.append(f"kome: {exc}")
+
+    # ── 3. yt.lemnoslife.com no-key proxy ─────────────────────────────────────
+    try:
+        lemnos_url = (
+            f"https://yt.lemnoslife.com/noKey"
+            f"?part=transcript&videoId={video_id}"
+        )
+        req3 = _urlreq.Request(lemnos_url, headers={"User-Agent": "Mozilla/5.0"})
+        with _urlreq.urlopen(req3, timeout=20) as resp3:
+            data3 = _json.loads(resp3.read())
+        # Response: { "items": [{ "transcript": [{"text": "...", "start": 0}] }] }
+        items = data3.get("items", [])
+        if items and isinstance(items, list):
+            segments = items[0].get("transcript", [])
+            combined3 = " ".join(s.get("text", "") for s in segments if s.get("text"))
+            if len(combined3) > 50:
+                return combined3
+        errors.append(f"lemnoslife: empty/missing items in response")
+    except Exception as exc:
+        errors.append(f"lemnoslife: {exc}")
+
+    raise ValueError(f"All third-party transcript services failed: {errors}")
+
+
 def _fetch_transcript_api(video_id: str) -> list:
     """Call youtube-transcript-api and return raw transcript items."""
     from youtube_transcript_api import YouTubeTranscriptApi  # type: ignore[import]
@@ -381,9 +469,11 @@ def _ydl_base_opts(tmpdir: str, *, audio: bool = False, subtitles: bool = False)
         "noplaylist":  True,
         "extractor_args": {
             "youtube": {
-                # tv_embedded → InnerTube call without watch-page bot-check
-                "player_client": ["tv_embedded", "mweb", "web"],
-                "player_skip":   ["webpage", "configs"],
+                # tv_embedded/android/ios use InnerTube endpoints with different
+                # API keys and less aggressive cloud-IP filtering than the web client.
+                # player_skip=["webpage","configs","js"] bypasses watch-page fetches.
+                "player_client": ["tv_embedded", "android_creator", "ios", "mweb"],
+                "player_skip":   ["webpage", "configs", "js"],
             }
         },
     }
@@ -491,17 +581,26 @@ def _fetch_transcript_ytdlp(url: str) -> str:
 
 def _load_youtube_transcript(url: str) -> str:
     """
-    Fetch transcript from a YouTube URL with three-layer fallback.
+    Fetch transcript from a YouTube URL with layered fallback.
+
+    Layer 0 — Third-party free APIs (cloud-safe, no IP block):
+        Supadata.ai, kome.ai, yt.lemnoslife.com — these run on residential-
+        proxy infrastructure so they work from Render/AWS. Fastest path.
+        Set SUPADATA_API_KEY for the most reliable free option.
 
     Layer 1 — youtube-transcript-api (fastest, no download):
         Works on residential IPs. Blocked on cloud/datacenter IPs (Render,
         AWS, GCP) because YouTube filters /get_transcript web requests by IP.
 
-    Layer 2 — yt-dlp VTT subtitle download (android player client):
-        Uses yt-dlp with the Android player API which hits different YouTube
-        endpoints. Faster than Whisper; occasionally works on cloud IPs.
+    Layer 2 — requests.Session + cookies (watch-page → caption download):
+        Maintains a single authenticated session so caption CDN sees a
+        consistent session token. Works when YOUTUBE_COOKIES is configured.
 
-    Layer 3 — yt-dlp audio + Groq Whisper (cloud-safe guaranteed):
+    Layer 3 — yt-dlp VTT subtitle download (multiple player clients):
+        Uses yt-dlp with the tv_embedded/android/ios player APIs which hit
+        different YouTube InnerTube endpoints. Faster than Whisper.
+
+    Layer 4 — yt-dlp audio + Groq Whisper (cloud-safe guaranteed):
         Downloads audio from YouTube's googlevideo.com CDN (NOT filtered by
         cloud-IP blocks) then transcribes with Groq Whisper. Slower (~30 s)
         but the only guaranteed path when running on Render or AWS.
@@ -509,6 +608,20 @@ def _load_youtube_transcript(url: str) -> str:
     video_id = _youtube_video_id(url)
     if not video_id:
         raise ValueError(f"Could not extract YouTube video id from URL: {url}")
+
+    # ── Layer 0: Third-party free transcript APIs (cloud-IP safe) ─────────────
+    logger.info("Trying third-party transcript APIs for video %s", video_id)
+    try:
+        text = _fetch_transcript_third_party(video_id)
+        if text:
+            logger.info(
+                "YouTube transcript loaded via third-party API (video=%s, %d chars)",
+                video_id, len(text),
+                extra={"video_id": video_id, "char_count": len(text), "method": "third-party"},
+            )
+            return text
+    except Exception as tp_exc:  # noqa: BLE001
+        logger.warning("Third-party transcript APIs failed (%s). Trying youtube-transcript-api…", tp_exc)
 
     # ── Layer 1: youtube-transcript-api ───────────────────────────────────────
     try:
@@ -554,12 +667,10 @@ def _load_youtube_transcript(url: str) -> str:
                 time.sleep(wait)
                 continue
 
-            logger.warning("youtube-transcript-api failed (%s). Trying InnerTube…", type(exc).__name__)
+            logger.warning("youtube-transcript-api failed (%s). Trying session…", type(exc).__name__)
             break
 
     # ── Layer 2: requests.Session + cookies (watch-page → caption download) ──
-    # Maintains a single authenticated session so caption CDN sees a consistent
-    # session token — works from cloud IPs when yt-dlp is blocked.
     logger.info("Trying session-based caption fetch for video %s", video_id)
     try:
         text = _fetch_transcript_session(video_id)
@@ -573,8 +684,8 @@ def _load_youtube_transcript(url: str) -> str:
     except Exception as sess_exc:  # noqa: BLE001
         logger.warning("Session-based fetch failed (%s). Trying yt-dlp…", sess_exc)
 
-    # ── Layer 3: yt-dlp VTT (tv_embedded + InnerTube direct) ─────────────────
-    logger.info("Trying yt-dlp VTT (tv_embedded) for video %s", video_id)
+    # ── Layer 3: yt-dlp VTT (multiple player clients) ─────────────────────────
+    logger.info("Trying yt-dlp VTT for video %s", video_id)
     try:
         text = _fetch_transcript_ytdlp(url)
         logger.info(
@@ -586,8 +697,7 @@ def _load_youtube_transcript(url: str) -> str:
     except Exception as vtt_exc:  # noqa: BLE001
         logger.warning("yt-dlp VTT failed (%s). Trying Whisper audio fallback…", vtt_exc)
 
-    # ── Layer 3: yt-dlp audio download + Groq Whisper (cloud-safe) ───────────
-    # Audio is fetched from googlevideo.com CDN — NOT filtered by cloud-IP blocks.
+    # ── Layer 4: yt-dlp audio download + Groq Whisper (cloud-safe) ───────────
     logger.info("Trying yt-dlp audio + Groq Whisper for video %s", video_id)
     try:
         text = _fetch_transcript_ytdlp_whisper(url)
@@ -599,16 +709,14 @@ def _load_youtube_transcript(url: str) -> str:
         return text
     except Exception as whisper_exc:  # noqa: BLE001
         logger.error("All YouTube transcript methods failed. Last error: %s", whisper_exc)
-        cookies_hint = (
-            "" if config.YOUTUBE_COOKIES else
-            " Set the YOUTUBE_COOKIES env var (base64 Netscape cookies.txt)"
-            " in the Render dashboard to enable authenticated access."
+        hint = (
+            " To enable YouTube support: sign up free at https://supadata.ai and set"
+            " SUPADATA_API_KEY in the Render dashboard (Environment → Add variable)."
+            if not config.SUPADATA_API_KEY else
+            " The video may be private, age-restricted, or have captions disabled."
         )
         raise ValueError(
-            "Could not fetch the YouTube transcript."
-            " The video may be private, age-restricted, or have captions disabled."
-            + cookies_hint
-            + " Alternative: paste the transcript as a .txt file and upload it."
+            "Could not fetch the YouTube transcript." + hint
         ) from whisper_exc
 
 

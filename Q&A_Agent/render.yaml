@@ -37,9 +37,11 @@ services:
       # Security — set a strong random secret in Render dashboard
       - key: IDENTITY_HMAC_SECRET
         sync: false
-      # YouTube cookies — base64-encoded Netscape cookies.txt from a logged-in
-      # YouTube session. Bypasses cloud-IP transcript blocks on Render.
-      # Generate: base64 -w0 cookies.txt  (export from browser with cookies.txt extension)
+      # YouTube transcripts — Option A (recommended): sign up free at supadata.ai
+      # and set SUPADATA_API_KEY. Option B: base64-encoded Netscape cookies.txt
+      # from a logged-in YouTube session (export from browser + base64 -w0 cookies.txt)
+      - key: SUPADATA_API_KEY
+        sync: false                        # set manually in Render dashboard
       - key: YOUTUBE_COOKIES
         sync: false                        # set manually in Render dashboard
       # PostgreSQL — external Render DB for persistent stats (survives sleep/restart)
