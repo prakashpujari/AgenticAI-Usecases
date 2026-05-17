@@ -222,16 +222,84 @@ def _fetch_transcript_api(video_id: str) -> list:
     return list(t.fetch())
 
 
+def _fetch_transcript_ytdlp_whisper(url: str) -> str:
+    """
+    Download YouTube audio via yt-dlp and transcribe with Groq Whisper.
+
+    Why this works on cloud IPs (Render, AWS, GCP):
+      - YouTube's transcript/caption endpoints (/youtubei/v1/get_transcript,
+        /api/timedtext) are filtered by IP and return empty or 403 for
+        datacenter ranges.
+      - Audio streams are served from YouTube's googlevideo.com CDN, which
+        is NOT filtered by cloud-IP blocks — the same CDN used by all
+        YouTube users globally.
+    So yt-dlp can download the audio even when caption endpoints fail.
+    Groq Whisper then transcribes it in ~10-30 s.
+    """
+    try:
+        import yt_dlp  # type: ignore[import]
+    except ImportError as exc:
+        raise ImportError("yt-dlp is required. pip install yt-dlp") from exc
+
+    if not config.GROQ_API_KEY:
+        raise EnvironmentError(
+            "GROQ_API_KEY is required for the audio transcription fallback."
+        )
+
+    with tempfile.TemporaryDirectory() as tmpdir:
+        ydl_opts = {
+            # Prefer small audio-only streams that Groq Whisper accepts directly
+            "format": (
+                "bestaudio[ext=m4a][filesize<20M]"
+                "/bestaudio[ext=webm][filesize<20M]"
+                "/bestaudio[filesize<20M]"
+                "/bestaudio"
+            ),
+            "outtmpl":    os.path.join(tmpdir, "audio.%(ext)s"),
+            "quiet":      True,
+            "no_warnings": True,
+            "noplaylist": True,
+            "http_headers": {
+                "User-Agent": (
+                    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+                    "AppleWebKit/537.36 (KHTML, like Gecko) "
+                    "Chrome/124.0.0.0 Safari/537.36"
+                ),
+            },
+        }
+
+        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+            ydl.download([url])
+
+        _WHISPER_EXTS = {".m4a", ".webm", ".mp3", ".wav", ".mp4", ".mpeg", ".mpga"}
+        audio_files = [
+            f for f in os.listdir(tmpdir)
+            if Path(f).suffix.lower() in _WHISPER_EXTS
+        ]
+        if not audio_files:
+            raise ValueError(
+                "yt-dlp could not download audio from this YouTube video."
+            )
+
+        audio_path = Path(os.path.join(tmpdir, audio_files[0]))
+        size_mb = audio_path.stat().st_size / (1024 * 1024)
+        if size_mb > 24:
+            raise ValueError(
+                f"Audio is {size_mb:.1f} MB — exceeds Groq Whisper's 25 MB limit. "
+                "Try a shorter video, or paste the transcript as a .txt file."
+            )
+
+        logger.info(
+            "Transcribing YouTube audio via Groq Whisper (%.1f MB, %s)",
+            size_mb, audio_path.suffix,
+        )
+        return _load_media_with_openai(audio_path)
+
+
 def _fetch_transcript_ytdlp(url: str) -> str:
     """
-    Fallback: download auto-generated VTT subtitles via yt-dlp.
-
-    yt-dlp fetches subtitles from YouTube's CDN (googlevideo.com), which is a
-    different endpoint from the /get_transcript API that youtube-transcript-api
-    uses. Cloud IPs (Render, Vercel, AWS) are commonly blocked by the latter
-    but not the former, making this an effective fallback.
-
-    No ffmpeg is required — we use --skip-download and request VTT subs only.
+    Last-resort fallback: download auto-generated VTT subtitles via yt-dlp
+    using the Android player client (less blocked than web player on cloud IPs).
     """
     try:
         import yt_dlp  # type: ignore[import]
@@ -244,13 +312,26 @@ def _fetch_transcript_ytdlp(url: str) -> str:
     with tempfile.TemporaryDirectory() as tmpdir:
         ydl_opts = {
             "writeautomaticsub": True,
-            "writesubtitles": True,
-            "skip_download": True,
-            "subtitlesformat": "vtt",
-            "subtitleslangs": ["en", "en-US", "en-GB", "en.*"],
-            "outtmpl": os.path.join(tmpdir, "%(id)s.%(ext)s"),
-            "quiet": True,
-            "no_warnings": True,
+            "writesubtitles":    True,
+            "skip_download":     True,
+            "subtitlesformat":   "vtt",
+            "subtitleslangs":    ["en", "en-US", "en-GB", "en.*"],
+            "outtmpl":           os.path.join(tmpdir, "%(id)s.%(ext)s"),
+            "quiet":             True,
+            "no_warnings":       True,
+            # Android player client is less filtered on cloud/datacenter IPs
+            "extractor_args": {
+                "youtube": {
+                    "player_client": ["android", "web"],
+                    "player_skip":   ["webpage"],
+                }
+            },
+            "http_headers": {
+                "User-Agent": (
+                    "com.google.android.youtube/19.09.37 "
+                    "(Linux; U; Android 11) gzip"
+                ),
+            },
         }
 
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
@@ -260,7 +341,6 @@ def _fetch_transcript_ytdlp(url: str) -> str:
         if not vtt_files:
             raise ValueError("yt-dlp could not find subtitles for this video.")
 
-        # Pick the most English-looking file first
         vtt_files.sort(key=lambda f: (0 if "en" in f.lower() else 1, f))
         vtt_content = Path(os.path.join(tmpdir, vtt_files[0])).read_text(encoding="utf-8")
 
@@ -272,32 +352,33 @@ def _fetch_transcript_ytdlp(url: str) -> str:
 
 def _load_youtube_transcript(url: str) -> str:
     """
-    Fetch transcript from a YouTube URL with two-layer fallback.
+    Fetch transcript from a YouTube URL with three-layer fallback.
 
-    Layer 1 — youtube-transcript-api (fast, no download):
-        Tries up to 3 times with exponential backoff. Works fine on residential
-        IPs and most CI environments. Fails on cloud IPs (Render, Vercel, AWS)
-        because YouTube blocks /get_transcript requests from those ranges.
+    Layer 1 — youtube-transcript-api (fastest, no download):
+        Works on residential IPs. Blocked on cloud/datacenter IPs (Render,
+        AWS, GCP) because YouTube filters /get_transcript web requests by IP.
 
-    Layer 2 — yt-dlp subtitle download (cloud-safe fallback):
-        Downloads only the VTT subtitle file (no audio/video, no ffmpeg needed)
-        via YouTube's CDN. Uses a different request path that is not blocked
-        by YouTube's cloud-IP filter.
+    Layer 2 — yt-dlp VTT subtitle download (android player client):
+        Uses yt-dlp with the Android player API which hits different YouTube
+        endpoints. Faster than Whisper; occasionally works on cloud IPs.
+
+    Layer 3 — yt-dlp audio + Groq Whisper (cloud-safe guaranteed):
+        Downloads audio from YouTube's googlevideo.com CDN (NOT filtered by
+        cloud-IP blocks) then transcribes with Groq Whisper. Slower (~30 s)
+        but the only guaranteed path when running on Render or AWS.
     """
     video_id = _youtube_video_id(url)
     if not video_id:
         raise ValueError(f"Could not extract YouTube video id from URL: {url}")
 
-    # ── Layer 1: youtube-transcript-api with retry ────────────────────────────
-    rate_limited = False
+    # ── Layer 1: youtube-transcript-api ───────────────────────────────────────
     try:
-        from youtube_transcript_api import YouTubeTranscriptApi  # noqa: F401 — probe import
+        from youtube_transcript_api import YouTubeTranscriptApi  # noqa: F401
     except ImportError as exc:
         raise ImportError(
             "youtube-transcript-api is required. pip install youtube-transcript-api"
         ) from exc
 
-    last_exc: Exception | None = None
     for attempt in range(3):
         try:
             items = _fetch_transcript_api(video_id)
@@ -310,7 +391,6 @@ def _load_youtube_transcript(url: str) -> str:
             text = " ".join(_snippet_text(i) for i in items).strip()
             if not text:
                 raise ValueError("Transcript API returned empty text.")
-
             logger.info(
                 "YouTube transcript loaded via API (video=%s, %d chars, attempt=%d)",
                 video_id, len(text), attempt + 1,
@@ -319,61 +399,57 @@ def _load_youtube_transcript(url: str) -> str:
             return text
 
         except Exception as exc:  # noqa: BLE001
-            last_exc = exc
             lowered = f"{type(exc).__name__} {exc}".lower()
 
             if "transcriptsdisabled" in lowered or "transcript is disabled" in lowered:
-                raise ValueError(
-                    "YouTube captions are disabled for this video."
-                ) from exc
+                raise ValueError("YouTube captions are disabled for this video.") from exc
             if "notranscriptfound" in lowered or "no transcript" in lowered:
-                raise ValueError(
-                    "No transcript available for this video/language."
-                ) from exc
+                raise ValueError("No transcript available for this video/language.") from exc
             if "videounavailable" in lowered or "video unavailable" in lowered:
                 raise ValueError(
                     "This YouTube video is unavailable (private, removed, or geo-restricted)."
                 ) from exc
-
             if "toomanyrequests" in lowered or "too many requests" in lowered or "429" in lowered:
-                rate_limited = True
-                wait = 2 ** attempt  # 1 s, 2 s, 4 s
-                logger.warning(
-                    "YouTube transcript API rate-limited (attempt %d/3). "
-                    "Waiting %ds before retry…",
-                    attempt + 1, wait,
-                )
+                wait = 2 ** attempt
+                logger.warning("YouTube API rate-limited (attempt %d/3). Waiting %ds…", attempt + 1, wait)
                 time.sleep(wait)
                 continue
 
-            # Unknown error — don't retry, fall through to yt-dlp
-            logger.warning(
-                "youtube-transcript-api failed (%s). Trying yt-dlp fallback…",
-                type(exc).__name__,
-            )
+            logger.warning("youtube-transcript-api failed (%s). Trying InnerTube…", type(exc).__name__)
             break
 
-    # ── Layer 2: yt-dlp VTT subtitle download ─────────────────────────────────
-    logger.info(
-        "Falling back to yt-dlp subtitle download for video %s (rate_limited=%s)",
-        video_id, rate_limited,
-    )
+    # ── Layer 2: yt-dlp VTT with Android player client ────────────────────────
+    # (Faster than Whisper; sometimes works even on cloud IPs)
+    logger.info("Trying yt-dlp VTT (android player) for video %s", video_id)
     try:
         text = _fetch_transcript_ytdlp(url)
         logger.info(
-            "YouTube transcript loaded via yt-dlp (video=%s, %d chars)",
+            "YouTube transcript loaded via yt-dlp VTT (video=%s, %d chars)",
             video_id, len(text),
-            extra={"video_id": video_id, "char_count": len(text), "method": "yt-dlp"},
+            extra={"video_id": video_id, "char_count": len(text), "method": "yt-dlp-vtt"},
         )
         return text
-    except Exception as ytdlp_exc:  # noqa: BLE001
-        logger.error("yt-dlp fallback also failed: %s", ytdlp_exc)
+    except Exception as vtt_exc:  # noqa: BLE001
+        logger.warning("yt-dlp VTT failed (%s). Trying Whisper audio fallback…", vtt_exc)
+
+    # ── Layer 3: yt-dlp audio download + Groq Whisper (cloud-safe) ───────────
+    # Audio is fetched from googlevideo.com CDN — NOT filtered by cloud-IP blocks.
+    logger.info("Trying yt-dlp audio + Groq Whisper for video %s", video_id)
+    try:
+        text = _fetch_transcript_ytdlp_whisper(url)
+        logger.info(
+            "YouTube transcript loaded via Whisper (video=%s, %d chars)",
+            video_id, len(text),
+            extra={"video_id": video_id, "char_count": len(text), "method": "whisper"},
+        )
+        return text
+    except Exception as whisper_exc:  # noqa: BLE001
+        logger.error("All YouTube transcript methods failed. Last error: %s", whisper_exc)
         raise ValueError(
-            "Could not fetch the YouTube transcript from this server.\n"
-            "YouTube blocks transcript requests from cloud IPs. Options:\n"
-            "  • Download the video and upload the file directly\n"
-            "  • Paste the video's text/script as a .txt file instead"
-        ) from ytdlp_exc
+            "Could not fetch the YouTube transcript.\n"
+            "Possible reasons: video is private/age-restricted, or captions are disabled.\n"
+            "Workaround: paste the video script as a .txt file and upload it instead."
+        ) from whisper_exc
 
 
 def _load_media_with_openai(path: Path) -> str:
