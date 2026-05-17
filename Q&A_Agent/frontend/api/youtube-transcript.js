@@ -1,86 +1,72 @@
 /**
- * Vercel serverless function: fetch YouTube transcript.
+ * Vercel Edge Function: fetch YouTube transcript.
  *
- * Runs on Vercel's infrastructure (different IP range from Render).
- * For videos where Vercel IPs are not blocked, this returns the transcript
- * so the frontend never hits Render's YouTube path.
- *
- * Methods tried in order:
- *   1. youtube-transcript npm package   (InnerTube get_transcript API)
- *   2. InnerTube WEB player direct POST (raw fetch, extra headers)
- *   3. Watch-page scrape + caption URL  (session-aware CDN download)
- *   4. Old timedtext endpoint           (legacy)
+ * Edge runtime runs on Vercel's global edge network (Cloudflare-like nodes),
+ * which uses different IP ranges from both Render (AWS) and Vercel Lambda.
+ * YouTube does not aggressively filter edge/CDN IP ranges the same way it
+ * filters known cloud-provider datacenter IPs.
  *
  * Returns 200 { transcript, method } on success.
  * Returns 502 { error, details }      if all methods fail.
  */
 
-export default async function handler(req, res) {
-  res.setHeader('Access-Control-Allow-Origin', '*')
-  res.setHeader('Access-Control-Allow-Methods', 'GET, OPTIONS')
+export const config = { runtime: 'edge' }
 
-  if (req.method === 'OPTIONS') return res.status(200).end()
-  if (req.method !== 'GET')
-    return res.status(405).json({ error: 'Method not allowed' })
+export default async function handler(req) {
+  const url = new URL(req.url)
+  const videoId = url.searchParams.get('videoId')
 
-  const { videoId } = req.query
+  const cors = {
+    'Access-Control-Allow-Origin': '*',
+    'Access-Control-Allow-Methods': 'GET, OPTIONS',
+    'Content-Type': 'application/json',
+  }
+
+  if (req.method === 'OPTIONS')
+    return new Response(null, { status: 200, headers: cors })
+
   if (!videoId || !/^[A-Za-z0-9_-]{11}$/.test(videoId))
-    return res.status(400).json({ error: 'Invalid videoId' })
+    return new Response(JSON.stringify({ error: 'Invalid videoId' }), { status: 400, headers: cors })
 
   const errors = []
 
-  // ── Method 1: youtube-transcript package ─────────────────────────────────
-  try {
-    const { YoutubeTranscript } = await import('youtube-transcript')
-    const items = await YoutubeTranscript.fetchTranscript(videoId, { lang: 'en' })
-    const text = items
-      .map(i => (i.text || '').replace(/\n/g, ' ').trim())
-      .filter(Boolean)
-      .join(' ')
-    if (text.length > 50)
-      return res.json({ transcript: text, method: 'youtube-transcript' })
-    errors.push('youtube-transcript: result too short')
-  } catch (e) {
-    errors.push(`youtube-transcript: ${e.message}`)
-  }
-
-  // ── Method 2: raw InnerTube get_transcript POST ───────────────────────────
+  // ── Method 1: InnerTube get_transcript (direct API call) ─────────────────
   try {
     const text = await fetchViaInnerTube(videoId)
     if (text.length > 50)
-      return res.json({ transcript: text, method: 'innertube' })
-    errors.push('innertube: result too short')
+      return new Response(JSON.stringify({ transcript: text, method: 'innertube' }), { headers: cors })
+    errors.push('innertube: too short')
   } catch (e) {
     errors.push(`innertube: ${e.message}`)
   }
 
-  // ── Method 3: watch-page scrape + session-cookie caption download ─────────
+  // ── Method 2: watch-page scrape + session-cookie caption download ─────────
   try {
     const text = await fetchViaWatchPage(videoId)
     if (text.length > 50)
-      return res.json({ transcript: text, method: 'watchpage' })
-    errors.push('watchpage: result too short')
+      return new Response(JSON.stringify({ transcript: text, method: 'watchpage' }), { headers: cors })
+    errors.push('watchpage: too short')
   } catch (e) {
     errors.push(`watchpage: ${e.message}`)
   }
 
-  // ── Method 4: old timedtext endpoint ──────────────────────────────────────
+  // ── Method 3: old timedtext endpoint ──────────────────────────────────────
   try {
     const text = await fetchViaTimedtext(videoId)
     if (text.length > 50)
-      return res.json({ transcript: text, method: 'timedtext' })
-    errors.push('timedtext: result too short')
+      return new Response(JSON.stringify({ transcript: text, method: 'timedtext' }), { headers: cors })
+    errors.push('timedtext: too short')
   } catch (e) {
     errors.push(`timedtext: ${e.message}`)
   }
 
-  return res.status(502).json({
-    error: 'youtube_proxy_failed',
-    details: errors,
-  })
+  return new Response(
+    JSON.stringify({ error: 'youtube_proxy_failed', details: errors }),
+    { status: 502, headers: cors }
+  )
 }
 
-// ── Helpers ────────────────────────────────────────────────────────────────
+// ── Helpers (Edge-compatible: only fetch(), no Node.js APIs) ──────────────
 
 const BROWSER_UA =
   'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 ' +
@@ -92,9 +78,11 @@ const BROWSER_HEADERS = {
   'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
   'Sec-Fetch-Mode': 'navigate',
   'Sec-Fetch-Site': 'none',
-  'Sec-Ch-Ua': '"Chromium";v="124", "Google Chrome";v="124"',
-  'Sec-Ch-Ua-Mobile': '?0',
-  'Sec-Ch-Ua-Platform': '"Windows"',
+}
+
+// Base64-encode a string (Edge-safe, no Buffer)
+function b64(str) {
+  return btoa(String.fromCharCode(...new TextEncoder().encode(str)))
 }
 
 async function fetchViaInnerTube(videoId) {
@@ -105,12 +93,10 @@ async function fetchViaInnerTube(videoId) {
         clientVersion: '2.20240101.00.00',
         hl: 'en', gl: 'US',
         userAgent: BROWSER_UA,
-        timeZone: 'America/New_York',
-        utcOffsetMinutes: -300,
       },
     },
     videoId,
-    params: Buffer.from(`\n\x0b${videoId}`).toString('base64'),
+    params: b64(`\n\x0b${videoId}`),
   })
 
   const resp = await fetch(
