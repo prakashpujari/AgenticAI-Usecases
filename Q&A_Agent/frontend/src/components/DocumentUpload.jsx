@@ -131,7 +131,6 @@ export default function DocumentUpload({ onJobSubmitted }) {
               )
               const transcript = proxyRes.data?.transcript
               if (transcript && transcript.length > 50) {
-                // Convert transcript text to a virtual .txt file and submit
                 setLoadingMsg('Transcript fetched — submitting...')
                 const blob = new Blob([transcript], { type: 'text/plain' })
                 const txtFile = new File([blob], `youtube-${videoId}.txt`, { type: 'text/plain' })
@@ -146,8 +145,13 @@ export default function DocumentUpload({ onJobSubmitted }) {
                 setFile(null); setSource(''); setNumQuestions(5)
                 return
               }
-            } catch (_proxyErr) {
-              // Proxy failed — fall through to backend (3-layer Whisper fallback)
+            } catch (proxyErr) {
+              const isYouTubeBlock = proxyErr.response?.data?.error === 'youtube_proxy_failed'
+              if (isYouTubeBlock) {
+                setLoading(false)
+                setError('YOUTUBE_BLOCKED')
+                return
+              }
               setLoadingMsg('Falling back to server processing...')
             }
           }
@@ -329,8 +333,59 @@ export default function DocumentUpload({ onJobSubmitted }) {
           />
         )}
 
+        {/* YouTube blocked — show setup guide */}
+        {error === 'YOUTUBE_BLOCKED' && (
+          <div className="mt-4 p-4 bg-amber-50 border border-amber-300 rounded-md space-y-3">
+            <p className="text-sm font-semibold text-amber-900">
+              YouTube transcripts are blocked from our servers.
+            </p>
+            <p className="text-xs text-amber-800">
+              YouTube blocks transcript requests from cloud hosting IPs.
+              Fix it in 3 steps — one time only:
+            </p>
+            <ol className="text-xs text-amber-800 list-decimal list-inside space-y-1">
+              <li>
+                Install{' '}
+                <a
+                  href="https://chrome.google.com/webstore/detail/get-cookiestxt-locally/cclelndahbckbenkjhflpdbgdldlbecc"
+                  target="_blank" rel="noopener noreferrer"
+                  className="underline font-medium"
+                >
+                  "Get cookies.txt LOCALLY"
+                </a>{' '}
+                Chrome extension
+              </li>
+              <li>Visit youtube.com (stay logged in), click the extension → Export</li>
+              <li>
+                Run this in PowerShell to get the value to paste:
+                <code className="block mt-1 bg-amber-100 px-2 py-1 rounded font-mono text-xs break-all">
+                  [Convert]::ToBase64String([IO.File]::ReadAllBytes("C:\path\to\cookies.txt"))
+                </code>
+              </li>
+              <li>
+                Paste it in{' '}
+                <a href="https://dashboard.render.com" target="_blank" rel="noopener noreferrer" className="underline font-medium">
+                  Render dashboard
+                </a>
+                {' '}→ qa-agent-api → Environment → Add variable:{' '}
+                <code className="font-mono">YOUTUBE_COOKIES</code>
+              </li>
+            </ol>
+            <p className="text-xs text-amber-700 font-medium">
+              Or: paste the video script as a .txt file and upload it instead.
+            </p>
+            <button
+              type="button"
+              onClick={() => setError(null)}
+              className="text-xs text-amber-700 underline"
+            >
+              Dismiss
+            </button>
+          </div>
+        )}
+
         {/* General error */}
-        {error && (
+        {error && error !== 'YOUTUBE_BLOCKED' && (
           <div className="mt-4 p-4 bg-red-50 border border-red-200 rounded-md">
             <p className="text-sm text-red-800">{error}</p>
           </div>
