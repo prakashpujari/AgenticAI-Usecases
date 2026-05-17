@@ -1,0 +1,22 @@
+name: Deploy to Render
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "Q&A_Agent/**"
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Trigger Render deploy
+        run: |
+          curl -s --fail-with-body \
+            "${{ secrets.RENDER_DEPLOY_HOOK_URL }}" \
+            -X POST | tee /dev/stderr | python3 -c "
+import sys, json
+data = json.load(sys.stdin)
+print('deploy id:', data.get('deploy', {}).get('id'))
+print('status:   ', data.get('deploy', {}).get('status'))
+"

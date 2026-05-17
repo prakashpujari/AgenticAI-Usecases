@@ -248,24 +248,18 @@ def _fetch_transcript_ytdlp_whisper(url: str) -> str:
 
     with tempfile.TemporaryDirectory() as tmpdir:
         ydl_opts = {
-            # Prefer small audio-only streams that Groq Whisper accepts directly
+            # Use default web client — android client returns 0 audio formats.
+            # Prefer smallest m4a/webm audio stream within Whisper's 25 MB cap.
             "format": (
                 "bestaudio[ext=m4a][filesize<20M]"
                 "/bestaudio[ext=webm][filesize<20M]"
                 "/bestaudio[filesize<20M]"
                 "/bestaudio"
             ),
-            "outtmpl":    os.path.join(tmpdir, "audio.%(ext)s"),
-            "quiet":      True,
+            "outtmpl":     os.path.join(tmpdir, "audio.%(ext)s"),
+            "quiet":       True,
             "no_warnings": True,
-            "noplaylist": True,
-            "http_headers": {
-                "User-Agent": (
-                    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-                    "AppleWebKit/537.36 (KHTML, like Gecko) "
-                    "Chrome/124.0.0.0 Safari/537.36"
-                ),
-            },
+            "noplaylist":  True,
         }
 
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
