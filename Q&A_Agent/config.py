@@ -80,8 +80,14 @@ REDIS_URL: str = os.getenv("REDIS_URL", "")
 CACHE_TTL: int = int(os.getenv("CACHE_TTL", "86400"))  # 24 hours
 
 # ─── PostgreSQL (job persistence + dashboard analytics) ───────────────────────
-# When DATABASE_URL is empty, the server falls back to SQLite.
-DATABASE_URL: str = os.getenv("DATABASE_URL", "")
+# External Render PostgreSQL — stats persist across sleep/restart cycles.
+# Override via DATABASE_URL env var in Render dashboard or render.yaml.
+DATABASE_URL: str = os.getenv(
+    "DATABASE_URL",
+    "postgresql://ai_apps_db_nzf4_user:upzKUnedEMR1EvhNJsiltS1SGnoBzE3F"
+    "@dpg-d84sbagjo89c73bskf10-a.oregon-postgres.render.com/ai_apps_db_nzf4"
+    "?sslmode=require",
+)
 
 # ─── Rate limiting ─────────────────────────────────────────────────────────────
 RATE_LIMIT_MAX:    int   = int(os.getenv("RATE_LIMIT_MAX",    "10"))
