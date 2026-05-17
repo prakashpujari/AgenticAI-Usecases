@@ -226,12 +226,17 @@ def _run_pipeline_with_timeout(job: dict[str, Any]) -> None:
     Python threads can't be forcibly killed; the child will eventually unblock
     once the underlying HTTP socket times out (request_timeout=30 on ChatGroq).
     """
+    import contextvars
     pipeline_id = job.get("pipeline_id", "unknown")
     result: dict = {}
 
+    # Copy the current contextvars context so LangSmith trace context vars
+    # (and any other contextvars) propagate into the child thread correctly.
+    ctx = contextvars.copy_context()
+
     def _target():
         try:
-            _execute_pipeline(job)
+            ctx.run(_execute_pipeline, job)
         except Exception as exc:       # already logged inside _execute_pipeline
             result["exc"] = exc
 
@@ -317,16 +322,39 @@ def _execute_pipeline(job: dict[str, Any]) -> None:
     try:
         from src.pipeline.graph import run_pipeline_graph
 
-        result = run_pipeline_graph(
-            input_source    = input_source,
-            pipeline_id     = pipeline_id,
-            output_mode     = output_mode,
-            num_questions   = num_questions,
-            request_id      = request_id,
-            source_label    = input_source,
-            output_md_path  = str(config.OUTPUT_DIR / f"{pipeline_id}_qa.md"),
-            output_pdf_path = str(config.OUTPUT_DIR / f"{pipeline_id}_qa.pdf"),
-        )
+        def _invoke_graph():
+            return run_pipeline_graph(
+                input_source    = input_source,
+                pipeline_id     = pipeline_id,
+                output_mode     = output_mode,
+                num_questions   = num_questions,
+                request_id      = request_id,
+                source_label    = input_source,
+                output_md_path  = str(config.OUTPUT_DIR / f"{pipeline_id}_qa.md"),
+                output_pdf_path = str(config.OUTPUT_DIR / f"{pipeline_id}_qa.pdf"),
+            )
+
+        # Wrap in a parent LangSmith trace so all @traceable stage spans appear
+        # as children, and flush after completion to guarantee delivery.
+        if _langsmith_active:
+            import langsmith as _ls
+            with _ls.trace(
+                name       = "qa_pipeline",
+                run_type   = "chain",
+                project_name = config.LANGCHAIN_PROJECT,
+                metadata   = {
+                    "pipeline_id":  pipeline_id,
+                    "output_mode":  output_mode,
+                    "num_questions": num_questions,
+                    "input_source": input_source[:200],
+                },
+                tags = ["pipeline", output_mode],
+            ):
+                result = _invoke_graph()
+            _ls.flush()   # force all buffered spans to be sent before thread ends
+        else:
+            result = _invoke_graph()
+
         markdown_content = result.get("markdown_content", "")
         pdf_path         = result.get("output_pdf_path", "")
         duration_ms      = (time.monotonic() - t_pipeline_start) * 1000
