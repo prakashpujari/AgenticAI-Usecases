@@ -228,12 +228,127 @@ def _yt_cookies_file() -> str | None:
     return str(cookies_path)
 
 
+def _yt_session() -> "requests.Session | None":  # type: ignore[name-defined]
+    """
+    Build an authenticated requests.Session from YOUTUBE_COOKIES.
+    Returns None when cookies are not configured.
+    Maintaining a single Session across requests preserves the YouTube
+    session token, which is required for caption downloads to succeed.
+    """
+    cookies_path = _yt_cookies_file()
+    if not cookies_path:
+        return None
+    try:
+        import requests as _req
+        session = _req.Session()
+        session.headers.update({
+            "User-Agent": (
+                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+                "AppleWebKit/537.36 (KHTML, like Gecko) "
+                "Chrome/124.0.0.0 Safari/537.36"
+            ),
+            "Accept-Language": "en-US,en;q=0.9",
+        })
+        with open(cookies_path, encoding="utf-8") as fh:
+            for line in fh:
+                line = line.strip()
+                if not line or line.startswith("#"):
+                    continue
+                parts = line.split("\t")
+                if len(parts) >= 7:
+                    domain, _, path, _, _, name, value = parts[:7]
+                    session.cookies.set(
+                        name, value,
+                        domain=domain.lstrip("."),
+                        path=path,
+                    )
+        return session
+    except Exception as exc:
+        logger.warning("Could not build YouTube session from cookies: %s", exc)
+        return None
+
+
+def _fetch_transcript_session(video_id: str) -> str:
+    """
+    Fetch transcript using requests.Session + YouTube cookies.
+
+    Session-based approach: the same authenticated session is used for both
+    the watch page request AND the caption file download, so the YouTube CDN
+    sees a consistent session token and returns actual caption content instead
+    of an empty response.  Works from cloud IPs when yt-dlp is blocked.
+    """
+    session = _yt_session()
+    if not session:
+        raise ValueError("No YouTube cookies configured.")
+
+    import json as _json
+    watch_url = f"https://www.youtube.com/watch?v={video_id}&hl=en&gl=US"
+    resp = session.get(watch_url, timeout=20)
+    html = resp.text
+
+    # Extract ytInitialPlayerResponse JSON
+    marker = "var ytInitialPlayerResponse = "
+    idx = html.find(marker)
+    if idx == -1:
+        raise ValueError("ytInitialPlayerResponse not found — YouTube may have served a bot-check page.")
+
+    depth, start = 0, idx + len(marker)
+    end = start
+    for i, ch in enumerate(html[start:], start):
+        if ch == "{":
+            depth += 1
+        elif ch == "}":
+            depth -= 1
+            if depth == 0:
+                end = i + 1
+                break
+
+    player = _json.loads(html[start:end])
+    tracks = (
+        player.get("captions", {})
+              .get("playerCaptionsTracklistRenderer", {})
+              .get("captionTracks", [])
+    )
+    if not tracks:
+        raise ValueError("No caption tracks found in player response.")
+
+    en_track = (
+        next((t for t in tracks if t.get("languageCode", "").startswith("en") and t.get("kind") == "asr"), None)
+        or next((t for t in tracks if t.get("languageCode", "").startswith("en")), None)
+        or tracks[0]
+    )
+
+    # Download with the same authenticated session — keeps session cookies
+    cap_resp = session.get(en_track["baseUrl"] + "&fmt=json3", timeout=20)
+    body = cap_resp.text
+    if not body or len(body) < 20:
+        raise ValueError("Caption response was empty — session token may have expired.")
+
+    cap_data = _json.loads(body)
+    seen: set[str] = set()
+    texts: list[str] = []
+    for event in cap_data.get("events", []):
+        for seg in event.get("segs", []):
+            txt = seg.get("utf8", "").replace("\n", " ").strip()
+            if txt and txt not in seen:
+                seen.add(txt)
+                texts.append(txt)
+
+    if not texts:
+        raise ValueError("Caption file downloaded but contained no text.")
+    return " ".join(texts)
+
+
 def _fetch_transcript_api(video_id: str) -> list:
     """Call youtube-transcript-api and return raw transcript items."""
     from youtube_transcript_api import YouTubeTranscriptApi  # type: ignore[import]
 
     cookies = _yt_cookies_file()
-    api = YouTubeTranscriptApi(cookies=cookies) if cookies else YouTubeTranscriptApi()
+    # cookies param added in newer versions; fall back gracefully if not supported
+    try:
+        api = YouTubeTranscriptApi(cookies=cookies) if cookies else YouTubeTranscriptApi()
+    except TypeError:
+        api = YouTubeTranscriptApi()
 
     fetch_fn = getattr(api, "fetch", None)
     if callable(fetch_fn):
@@ -442,9 +557,24 @@ def _load_youtube_transcript(url: str) -> str:
             logger.warning("youtube-transcript-api failed (%s). Trying InnerTube…", type(exc).__name__)
             break
 
-    # ── Layer 2: yt-dlp VTT with Android player client ────────────────────────
-    # (Faster than Whisper; sometimes works even on cloud IPs)
-    logger.info("Trying yt-dlp VTT (android player) for video %s", video_id)
+    # ── Layer 2: requests.Session + cookies (watch-page → caption download) ──
+    # Maintains a single authenticated session so caption CDN sees a consistent
+    # session token — works from cloud IPs when yt-dlp is blocked.
+    logger.info("Trying session-based caption fetch for video %s", video_id)
+    try:
+        text = _fetch_transcript_session(video_id)
+        if text:
+            logger.info(
+                "YouTube transcript loaded via session (video=%s, %d chars)",
+                video_id, len(text),
+                extra={"video_id": video_id, "char_count": len(text), "method": "session"},
+            )
+            return text
+    except Exception as sess_exc:  # noqa: BLE001
+        logger.warning("Session-based fetch failed (%s). Trying yt-dlp…", sess_exc)
+
+    # ── Layer 3: yt-dlp VTT (tv_embedded + InnerTube direct) ─────────────────
+    logger.info("Trying yt-dlp VTT (tv_embedded) for video %s", video_id)
     try:
         text = _fetch_transcript_ytdlp(url)
         logger.info(

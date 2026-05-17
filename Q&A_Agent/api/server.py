@@ -970,7 +970,10 @@ async def youtube_debug(request: Request, videoId: str = "arj7oStGLkU"):
     # ── 2. Layer 1: youtube-transcript-api ────────────────────────────────────
     try:
         from youtube_transcript_api import YouTubeTranscriptApi
-        api = YouTubeTranscriptApi(cookies=cookies_path) if cookies_path else YouTubeTranscriptApi()
+        try:
+            api = YouTubeTranscriptApi(cookies=cookies_path) if cookies_path else YouTubeTranscriptApi()
+        except TypeError:
+            api = YouTubeTranscriptApi()
         items = list(api.fetch(videoId)) if hasattr(api, "fetch") else []
         if not items:
             tl = api.list(videoId)
@@ -982,6 +985,17 @@ async def youtube_debug(request: Request, videoId: str = "arj7oStGLkU"):
     except Exception as exc:
         result["layer1_status"] = "failed"
         result["layer1_error"] = str(exc)[:200]
+
+    # ── 2b. Session-based caption fetch ──────────────────────────────────────
+    try:
+        from src.ingestion.document_loader import _fetch_transcript_session
+        text = _fetch_transcript_session(videoId)
+        result["session_status"] = "ok"
+        result["session_chars"] = len(text)
+        result["session_preview"] = text[:100]
+    except Exception as exc:
+        result["session_status"] = "failed"
+        result["session_error"] = str(exc)[:200]
 
     # ── 3. yt-dlp info extraction (no download) ───────────────────────────────
     try:
