@@ -4,6 +4,25 @@ import RateLimitBanner from './RateLimitBanner'
 import { parseApiError, getDeviceFingerprint } from '../utils/errorHandler'
 
 const MAX_FILE_BYTES = 50 * 1024 * 1024 // 50 MB
+
+// ── YouTube helpers ────────────────────────────────────────────────────────
+function isYouTubeUrl(url) {
+  return /(?:youtube\.com|youtu\.be)/i.test(url)
+}
+function extractVideoId(url) {
+  const patterns = [
+    /[?&]v=([A-Za-z0-9_-]{11})/,
+    /youtu\.be\/([A-Za-z0-9_-]{11})/,
+    /\/shorts\/([A-Za-z0-9_-]{11})/,
+    /\/live\/([A-Za-z0-9_-]{11})/,
+    /\/embed\/([A-Za-z0-9_-]{11})/,
+  ]
+  for (const p of patterns) {
+    const m = url.match(p)
+    if (m) return m[1]
+  }
+  return null
+}
 const ALLOWED_EXTENSIONS = new Set([
   // Documents
   'pdf','txt','md','rst','docx',
@@ -33,6 +52,7 @@ export default function DocumentUpload({ onJobSubmitted }) {
   const [source, setSource] = useState('')
   const [numQuestions, setNumQuestions] = useState(5)
   const [loading, setLoading] = useState(false)
+  const [loadingMsg, setLoadingMsg] = useState('Submitting...')
   const [error, setError] = useState(null)
   const [rateLimitInfo, setRateLimitInfo] = useState(null) // { retryAfter, debugId }
   const [dragActive, setDragActive] = useState(false)
@@ -72,18 +92,13 @@ export default function DocumentUpload({ onJobSubmitted }) {
   const handleSubmit = async (e) => {
     e.preventDefault()
     if (inputMode === 'file') {
-      if (!file) {
-        setError('Please select a file')
-        return
-      }
+      if (!file) { setError('Please select a file'); return }
     } else {
-      if (!source.trim()) {
-        setError('Please provide a website URL, YouTube URL, or local path')
-        return
-      }
+      if (!source.trim()) { setError('Please provide a URL or path'); return }
     }
 
     setLoading(true)
+    setLoadingMsg('Submitting...')
     setError(null)
     setRateLimitInfo(null)
 
@@ -93,6 +108,7 @@ export default function DocumentUpload({ onJobSubmitted }) {
       let response
 
       if (inputMode === 'file') {
+        // ── File upload path ────────────────────────────────────────────────
         const formData = new FormData()
         formData.append('file', file)
         formData.append('num_questions', numQuestions)
@@ -101,17 +117,52 @@ export default function DocumentUpload({ onJobSubmitted }) {
           headers: { ...headers, 'Content-Type': 'multipart/form-data' },
         })
       } else {
+        const src = source.trim()
+
+        // ── YouTube: try Vercel proxy first ────────────────────────────────
+        if (isYouTubeUrl(src)) {
+          const videoId = extractVideoId(src)
+          if (videoId) {
+            setLoadingMsg('Fetching YouTube transcript...')
+            try {
+              const proxyRes = await axios.get(
+                `/api/youtube-transcript?videoId=${videoId}`,
+                { timeout: 45000 }
+              )
+              const transcript = proxyRes.data?.transcript
+              if (transcript && transcript.length > 50) {
+                // Convert transcript text to a virtual .txt file and submit
+                setLoadingMsg('Transcript fetched — submitting...')
+                const blob = new Blob([transcript], { type: 'text/plain' })
+                const txtFile = new File([blob], `youtube-${videoId}.txt`, { type: 'text/plain' })
+                const formData = new FormData()
+                formData.append('file', txtFile)
+                formData.append('num_questions', numQuestions)
+                formData.append('output_mode', outputMode)
+                response = await axios.post('/api/qa/generate', formData, {
+                  headers: { ...headers, 'Content-Type': 'multipart/form-data' },
+                })
+                onJobSubmitted(response.data.pipeline_id)
+                setFile(null); setSource(''); setNumQuestions(5)
+                return
+              }
+            } catch (_proxyErr) {
+              // Proxy failed — fall through to backend (3-layer Whisper fallback)
+              setLoadingMsg('Falling back to server processing...')
+            }
+          }
+        }
+
+        // ── Regular URL / YouTube fallback to Render backend ───────────────
         response = await axios.post('/api/qa/generate-source', {
-          source: source.trim(),
+          source: src,
           num_questions: numQuestions,
           output_mode: outputMode,
         }, { headers })
       }
 
       onJobSubmitted(response.data.pipeline_id)
-      setFile(null)
-      setSource('')
-      setNumQuestions(5)
+      setFile(null); setSource(''); setNumQuestions(5)
     } catch (err) {
       const parsed = parseApiError(err)
       if (parsed.errorCode === 'RATE_LIMIT_EXCEEDED' || parsed.errorCode === 'SPIKE_ARREST') {
@@ -121,6 +172,7 @@ export default function DocumentUpload({ onJobSubmitted }) {
       }
     } finally {
       setLoading(false)
+      setLoadingMsg('Submitting...')
     }
   }
 
@@ -290,7 +342,7 @@ export default function DocumentUpload({ onJobSubmitted }) {
           disabled={loading || (inputMode === 'file' ? !file : !source.trim())}
           className="w-full mt-6 bg-indigo-600 text-white font-medium py-2 px-4 rounded-md hover:bg-indigo-700 disabled:bg-gray-400 disabled:cursor-not-allowed transition"
         >
-          {loading ? 'Submitting...' : 'Generate Questions'}
+          {loading ? loadingMsg : 'Generate Questions'}
         </button>
       </form>
 
