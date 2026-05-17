@@ -126,7 +126,7 @@ def _build_groq_llm(model: str):
 
 
 def _build_gemini_llm():
-    """Build Google Gemini LLM — free-tier fallback when Groq quota is exhausted."""
+    """Google Gemini — free-tier fallback. Key must be from aistudio.google.com/apikey."""
     from langchain_google_genai import ChatGoogleGenerativeAI
     return ChatGoogleGenerativeAI(
         model=config.GEMINI_MODEL,
@@ -136,14 +136,25 @@ def _build_gemini_llm():
     )
 
 
+def _build_hf_llm():
+    """Hugging Face Serverless Inference — free with a read-only HF token."""
+    from langchain_huggingface import ChatHuggingFace, HuggingFaceEndpoint
+    endpoint = HuggingFaceEndpoint(
+        repo_id=config.HF_MODEL,
+        huggingfacehub_api_token=config.HF_API_KEY,
+        max_new_tokens=4096,
+        temperature=config.TEMPERATURE,
+        task="text-generation",
+    )
+    return ChatHuggingFace(llm=endpoint)
+
+
 def _providers() -> list[tuple[str, str, callable]]:
     """
-    Return ordered provider list: multiple Groq models then Gemini.
+    Return ordered provider list: multiple Groq models, then Gemini, then HuggingFace.
 
     Each Groq model has an INDEPENDENT daily/per-minute quota so rotating
-    through them maximises available capacity before hitting Gemini.
-
-    Provider tuple: (internal_name, display_slot, llm_factory)
+    through them maximises capacity before falling to external providers.
     """
     groq_models = [
         config.GROQ_MODEL,           # primary (e.g. llama-3.3-70b-versatile)
@@ -151,7 +162,6 @@ def _providers() -> list[tuple[str, str, callable]]:
         "gemma2-9b-it",              # higher Groq rate limits than Llama 70B
         "llama-3.2-3b-preview",      # smallest / highest Groq quota
     ]
-    # Deduplicate while preserving order
     seen: set[str] = set()
     providers = []
     for m in groq_models:
@@ -161,6 +171,9 @@ def _providers() -> list[tuple[str, str, callable]]:
 
     if config.GEMINI_API_KEY:
         providers.append(("gemini", config.GEMINI_MODEL, _build_gemini_llm))
+
+    if config.HF_API_KEY:
+        providers.append(("huggingface", config.HF_MODEL, _build_hf_llm))
 
     return providers
 

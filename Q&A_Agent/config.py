@@ -68,10 +68,17 @@ GROQ_FALLBACK_MODEL: str = os.getenv("GROQ_FALLBACK_MODEL", "llama-3.1-8b-instan
 GROQ_VISION_MODEL: str   = os.getenv("GROQ_VISION_MODEL", "meta-llama/llama-4-scout-17b-16e-instruct")
 
 # ── Google Gemini (free fallback when Groq quota is exhausted) ─────────────────
+# IMPORTANT: Use a key from https://aistudio.google.com/apikey (NOT Google Cloud
+# Console) — AI Studio keys include the free tier quota automatically.
 # Free tier: 1 500 req/day, 15 req/min for gemini-2.0-flash.
-# Get a key at https://aistudio.google.com/apikey (no credit card required).
 GEMINI_API_KEY: str  = os.getenv("GEMINI_API_KEY", "")
 GEMINI_MODEL: str    = os.getenv("GEMINI_MODEL", "gemini-2.0-flash")
+
+# ── Hugging Face (secondary free fallback) ─────────────────────────────────────
+# Free Serverless Inference API — no credit card, just a HuggingFace account.
+# Get a token at https://huggingface.co/settings/tokens (read-only token).
+HF_API_KEY: str   = os.getenv("HF_API_KEY", "")
+HF_MODEL: str     = os.getenv("HF_MODEL", "mistralai/Mistral-7B-Instruct-v0.3")
 
 # Embeddings use a local ONNX model via fastembed (Groq has no embedding API).
 EMBEDDING_MODEL: str = os.getenv("EMBEDDING_MODEL", "sentence-transformers/all-MiniLM-L6-v2")
