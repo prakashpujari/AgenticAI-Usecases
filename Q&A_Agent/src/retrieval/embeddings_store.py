@@ -1,45 +1,44 @@
 """
 src/retrieval/embeddings_store.py
 ──────────────────────────────────
-Manages the FAISS vector store lifecycle:
+Manages the per-job FAISS vector store lifecycle:
   • Split clean text into overlapping chunks
-  • Embed chunks with OpenAI text-embedding-3-small
-  • Persist the FAISS index to disk for reuse across runs
-  • Expose a similarity-search retriever for downstream Q&A
+  • Embed chunks with sentence-transformers/all-MiniLM-L6-v2 (local, free, fast)
+  • Build an in-memory FAISS index for similarity search
+  • Expose a retriever for downstream Q&A generation
 
 Why FAISS?
 ──────────
-FAISS (Facebook AI Similarity Search) is a battle-tested, CPU-efficient
-approximate nearest-neighbour library.  For document collections up to
-millions of chunks it provides millisecond query times without requiring a
-running server (unlike Pinecone, Weaviate, or Qdrant).  The entire index
-lives in a local directory — perfect for a self-contained pipeline.
+FAISS (Facebook AI Similarity Search) is a CPU-efficient, zero-cost library
+for approximate nearest-neighbour search.  It runs entirely in-memory — no
+server, no network calls, no cost.  For per-job document collections (dozens
+to hundreds of chunks) it provides sub-millisecond query times on a single CPU.
 
-Why text-embedding-3-small?
-───────────────────────────
-At 1,536 dimensions it delivers strong retrieval quality while being
-significantly cheaper and faster than text-embedding-ada-002 or
-text-embedding-3-large.  For a single PDF source document the quality
-difference vs. the larger model is negligible.
+Each job creates its own isolated FAISS instance: built from the job's chunks,
+queried during generation, then garbage-collected.  No shared state between
+concurrent jobs; no disk persistence needed.
+
+Why sentence-transformers/all-MiniLM-L6-v2?
+────────────────────────────────────────────
+384-dimensional dense embeddings.  Fast on CPU (50–200 ms for a typical
+document), strong semantic retrieval quality, entirely free (runs locally,
+no API key needed, model downloaded once at container startup).
 
 Why overlapping chunks?
 ───────────────────────
-RecursiveCharacterTextSplitter produces chunks of ~1,000 characters with a
-200-character overlap.  The overlap ensures that sentences spanning a chunk
-boundary are fully captured in at least one chunk, preventing fragmented
-context being sent to the LLM.
+RecursiveCharacterTextSplitter with ~1,000-char chunks and 200-char overlap
+ensures sentences spanning chunk boundaries appear in at least one complete
+chunk, preventing fragmented context reaching the LLM.
 
 Public API
 ──────────
     split_text(text)                    → list[Document]
-    build_vector_store(chunks)          → FAISS
-    load_vector_store()                 → FAISS
+    build_vector_store(chunks)          → FAISS   (in-memory, per-job)
     get_retriever(vector_store, k)      → VectorStoreRetriever
     get_all_documents(vector_store)     → list[Document]
 """
 
 import os
-from pathlib import Path
 
 from langchain_core.documents import Document
 from langchain_community.vectorstores import FAISS
@@ -50,27 +49,26 @@ from observability.logger import get_logger
 
 logger = get_logger(__name__)
 
-# Lazy singleton — HuggingFaceEmbeddings is NOT imported at module level to
-# avoid the sentence-transformers → transformers → heavy import chain running
-# in a background worker thread (causes a Windows hang on first import).
+# Lazy singleton — importing HuggingFaceEmbeddings triggers the full
+# sentence-transformers / transformers chain which is slow on first import.
+# Deferring it avoids adding ~3 s to server startup.
 _embeddings = None
 
 
 def _get_embeddings():
     global _embeddings
     if _embeddings is None:
-        # Set env vars before the first import of langchain_huggingface
-        os.environ["USE_TORCH"] = "1"
-        os.environ["USE_TF"]    = "0"
-        os.environ.setdefault("HF_HUB_OFFLINE",       "1")
-        os.environ.setdefault("TRANSFORMERS_OFFLINE",  "1")
-        os.environ.setdefault("TOKENIZERS_PARALLELISM","false")
+        # Suppress TF / tokenizer noise before importing heavy deps
+        os.environ.setdefault("USE_TORCH",              "1")
+        os.environ.setdefault("USE_TF",                 "0")
+        os.environ.setdefault("TOKENIZERS_PARALLELISM", "false")
         from langchain_huggingface import HuggingFaceEmbeddings  # noqa: PLC0415
         _embeddings = HuggingFaceEmbeddings(
-            model_name=config.EMBEDDING_MODEL,
+            model_name=config.EMBEDDING_MODEL,           # all-MiniLM-L6-v2
             model_kwargs={"device": "cpu"},
             encode_kwargs={"normalize_embeddings": True},
         )
+        logger.info("Embedding model loaded: %s", config.EMBEDDING_MODEL)
     return _embeddings
 
 
@@ -78,66 +76,39 @@ def _get_embeddings():
 
 def split_text(text: str) -> list[Document]:
     """
-    Splits cleaned text into overlapping LangChain Document chunks.
+    Split cleaned text into overlapping LangChain Document chunks.
 
-    Splitter strategy
-    ──────────────────
-    RecursiveCharacterTextSplitter tries each separator in the provided list
-    in order, falling back to the next one only if the chunk would still
-    exceed chunk_size.  Our separator priority:
-
-      1. "\\n\\n"  — paragraph boundary (strongest semantic break)
-      2. "\\n"     — line break (weaker, intra-paragraph)
-      3. ". "      — sentence boundary (preserves readable sentences)
-      4. " "       — word boundary (last resort before hard character split)
-      5. ""        — hard character split (fallback, rare)
-
-    This hierarchy maximises the semantic coherence of each chunk, which
-    directly improves retrieval precision.
-
-    chunk_size vs. chunk_overlap
-    ─────────────────────────────
-    config.CHUNK_SIZE  (default 1000) is measured in characters, not tokens.
-    OpenAI's text-embedding-3-small has an 8,191-token context limit; 1,000
-    characters is roughly 250 tokens — well within the limit while being
-    large enough to give the LLM meaningful context.
-
-    config.CHUNK_OVERLAP (default 200) causes a 200-character sliding window
-    so boundary sentences appear in both their preceding and following chunks.
+    Separator priority (RecursiveCharacterTextSplitter):
+      1. "\\n\\n"  paragraph break  (strongest semantic boundary)
+      2. "\\n"     line break
+      3. ". "      sentence boundary
+      4. " "       word boundary
+      5. ""        hard character split (last resort)
 
     Args:
-        text: Cleaned text from pdf_extractor.clean_text().
+        text: Cleaned plain text from the ingestion layer.
 
     Returns:
-        List of LangChain Document objects, each with page_content populated
-        and an empty metadata dict.
+        List of Document objects ready for FAISS.from_documents().
 
     Raises:
-        ValueError: If the input text is empty.
+        ValueError: If text is empty.
     """
     if not text.strip():
         raise ValueError("Cannot split empty text.")
 
     splitter = RecursiveCharacterTextSplitter(
-        chunk_size=config.CHUNK_SIZE,
-        chunk_overlap=config.CHUNK_OVERLAP,
-        # Priority-ordered separators — see module docstring for rationale
+        chunk_size=config.CHUNK_SIZE,       # default 1000 chars (~250 tokens)
+        chunk_overlap=config.CHUNK_OVERLAP, # default 200 chars overlap
         separators=["\n\n", "\n", ". ", " ", ""],
     )
-    # split_text returns plain strings; create_documents wraps them in
-    # Document objects, which is the type expected by FAISS.from_documents().
     chunks: list[Document] = splitter.create_documents([text])
 
     logger.info(
-        "Split text into %d chunks (chunk_size=%d, overlap=%d)",
-        len(chunks),
-        config.CHUNK_SIZE,
-        config.CHUNK_OVERLAP,
-        extra={
-            "num_chunks":    len(chunks),
-            "chunk_size":    config.CHUNK_SIZE,
-            "chunk_overlap": config.CHUNK_OVERLAP,
-        },
+        "Split text into %d chunks (size=%d, overlap=%d)",
+        len(chunks), config.CHUNK_SIZE, config.CHUNK_OVERLAP,
+        extra={"num_chunks": len(chunks), "chunk_size": config.CHUNK_SIZE,
+               "chunk_overlap": config.CHUNK_OVERLAP},
     )
     return chunks
 
@@ -146,33 +117,21 @@ def split_text(text: str) -> list[Document]:
 
 def build_vector_store(chunks: list[Document]) -> FAISS:
     """
-    Embeds *chunks* and stores them in a FAISS vector index on disk.
+    Embed chunks and build an in-memory FAISS index for this job.
 
-    Persistence strategy
-    ─────────────────────
-    FAISS.save_local(path) writes two files:
-      • index.faiss  — the binary ANN index (vectors + graph structure)
-      • index.pkl    — a pickle of the LangChain docstore (text + metadata)
-
-    Both files must remain co-located for load_vector_store() to work.
-    The directory is defined in config.FAISS_INDEX_PATH.
-
-    Embedding cost
-    ──────────────
-    This function calls the OpenAI Embeddings API once per batch (LangChain
-    batches the chunks internally).  For a typical single PDF (~50 chunks)
-    this costs fractions of a cent.  For larger corpora consider a local
-    embedding model to avoid API costs.
+    The index is NOT persisted to disk — it lives only for the duration of
+    the pipeline run (build → retrieve → generate → discard).  This avoids
+    stale-index bugs and concurrent-write races when multiple jobs run in
+    parallel on the same server.
 
     Args:
-        chunks: Documents produced by split_text().
+        chunks: Documents from split_text().
 
     Returns:
-        The in-memory FAISS vector store (also persisted to disk).
+        In-memory FAISS vector store ready for similarity search.
 
     Raises:
-        ValueError: If chunks list is empty.
-        openai.APIError: On OpenAI API failure.
+        ValueError: If chunks is empty.
     """
     if not chunks:
         raise ValueError("Cannot build a vector store from an empty chunk list.")
@@ -180,69 +139,21 @@ def build_vector_store(chunks: list[Document]) -> FAISS:
     embeddings = _get_embeddings()
 
     logger.info(
-        "Building FAISS vector store from %d chunks using model '%s' …",
-        len(chunks),
-        config.EMBEDDING_MODEL,
+        "Building FAISS index from %d chunks (model: %s) …",
+        len(chunks), config.EMBEDDING_MODEL,
         extra={"num_chunks": len(chunks), "embedding_model": config.EMBEDDING_MODEL},
     )
 
+    # FAISS.from_documents embeds all chunks in one batched call and builds
+    # an IndexFlatL2 (exact L2 nearest-neighbour) index in memory.
     vector_store = FAISS.from_documents(chunks, embeddings)
-    vector_store.save_local(str(config.FAISS_INDEX_PATH))
 
     logger.info(
-        "FAISS index persisted to %s",
-        config.FAISS_INDEX_PATH,
-        extra={"index_path": str(config.FAISS_INDEX_PATH)},
-    )
-    return vector_store
-
-
-# ─── Vector store loading ──────────────────────────────────────────────────────
-
-def load_vector_store() -> FAISS:
-    """
-    Loads a previously persisted FAISS index from disk.
-
-    Security note on allow_dangerous_deserialization
-    ─────────────────────────────────────────────────
-    LangChain's FAISS.load_local() uses pickle (via index.pkl) to restore the
-    docstore.  Because arbitrary code can be embedded in a pickle file,
-    LangChain requires explicit opt-in via allow_dangerous_deserialization=True.
-
-    This is SAFE here because:
-      1. The pickle file was created in the same pipeline run by build_vector_store().
-      2. The file is stored locally under a project-controlled directory.
-      3. No untrusted third party has write access to config.FAISS_INDEX_PATH.
-
-    In a production environment where the index file might come from an
-    external source, you should use a safer serialisation format or verify
-    the file's integrity (checksum/signature) before loading.
-
-    Returns:
-        Loaded FAISS vector store, ready for similarity searches.
-
-    Raises:
-        FileNotFoundError: If the index files do not exist on disk.
-    """
-    index_path = config.FAISS_INDEX_PATH
-    if not (index_path / "index.faiss").exists():
-        raise FileNotFoundError(
-            f"FAISS index not found at {index_path}. "
-            "Run the pipeline first to generate the index."
-        )
-
-    embeddings = _get_embeddings()
-
-    vector_store = FAISS.load_local(
-        str(index_path),
-        embeddings,
-        allow_dangerous_deserialization=True,  # intentional — see docstring
-    )
-
-    logger.info(
-        "FAISS index loaded from %s",
-        index_path,
-        extra={"index_path": str(index_path)},
+        "FAISS index ready — %d vectors, dim=%d",
+        vector_store.index.ntotal,
+        vector_store.index.d,
+        extra={"num_vectors": vector_store.index.ntotal,
+               "dim": vector_store.index.d},
     )
     return vector_store
 
@@ -251,40 +162,33 @@ def load_vector_store() -> FAISS:
 
 def get_retriever(vector_store: FAISS, k: int | None = None):
     """
-    Wraps the FAISS vector store in a LangChain retriever.
-
-    The retriever provides a standardised .invoke(query) interface used by
-    LangChain expression chains (LCEL).  k controls how many chunks are
-    returned per query — more chunks = more context but higher LLM cost.
+    Wrap the FAISS vector store in a LangChain retriever.
 
     Args:
-        vector_store: An in-memory FAISS instance.
-        k: Number of chunks to return per query.  Defaults to config.TOP_K.
+        vector_store: In-memory FAISS instance from build_vector_store().
+        k: Chunks to return per query.  Defaults to config.TOP_K_RETRIEVAL.
 
     Returns:
-        VectorStoreRetriever configured for similarity search.
+        VectorStoreRetriever with similarity search configured.
     """
-    k = k if k is not None else config.TOP_K
+    k = k if k is not None else config.TOP_K_RETRIEVAL
     return vector_store.as_retriever(search_kwargs={"k": k})
 
 
 def get_all_documents(vector_store: FAISS) -> list[Document]:
     """
-    Returns ALL documents stored in the vector store as a flat list.
+    Return ALL documents stored in the vector store as a flat list.
 
-    This is used by the Q&A generator to run broad thematic queries —
-    it needs to know the full corpus so it can sample topics evenly
-    rather than biasing towards whichever chunk matches the first query.
+    Used by the Q&A generator to sample topics evenly across the full corpus
+    rather than biasing retrieval towards the first query's nearest neighbours.
 
-    Implementation detail:
-        FAISS.docstore._dict is the internal LangChain docstore dictionary
-        keyed by UUID string.  Accessing it directly is an implementation
-        detail of langchain-community; it may change in future versions.
+    Note: Accesses FAISS.docstore._dict which is a LangChain implementation
+    detail; may need updating if langchain-community changes its internals.
 
     Args:
-        vector_store: An in-memory FAISS instance.
+        vector_store: In-memory FAISS instance.
 
     Returns:
-        List of all Document objects in insertion order (arbitrary).
+        List of all Document objects (arbitrary order).
     """
     return list(vector_store.docstore._dict.values())

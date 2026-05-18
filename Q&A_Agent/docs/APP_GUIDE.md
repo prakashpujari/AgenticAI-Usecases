@@ -1,645 +1,550 @@
-# Q&A Agent — Complete Application Guide
+# Q&A Agent — User Guide
 
-> **Generate multiple-choice practice questions from any document using AI.**
-> Upload a PDF, paste a URL, or point at a YouTube video — the pipeline extracts
-> the text, embeds it, retrieves relevant context, and asks GPT-4o to write
-> original MCQ questions. Results are delivered as Markdown and a downloadable PDF.
+> **Generate multiple-choice questions and summaries from any document, URL, or media file — powered by AI.**
+
+Live app: **https://frontend-six-red-29.vercel.app**
 
 ---
 
 ## Table of Contents
 
-1. [Architecture Overview](#1-architecture-overview)
-2. [How to Start the App](#2-how-to-start-the-app)
-3. [Step-by-Step UI Walkthrough](#3-step-by-step-ui-walkthrough)
-   - [Step 1 — Landing Page](#step-1--landing-page)
-   - [Step 2 — Choose Input Mode](#step-2--choose-input-mode)
-   - [Step 3 — Local File Upload](#step-3--local-file-upload)
-   - [Step 4 — URL / Source Input](#step-4--url--source-input)
-   - [Step 5 — Set Number of Questions](#step-5--set-number-of-questions)
-   - [Step 6 — Submit the Job](#step-6--submit-the-job)
-   - [Step 7 — Queued & Processing States](#step-7--queued--processing-states)
-   - [Step 8 — Completed: View Results](#step-8--completed-view-results)
-   - [Step 9 — Download the PDF](#step-9--download-the-pdf)
-   - [Step 10 — Empty Form Guard](#step-10--empty-form-guard)
-4. [Backend Pipeline (7 Stages)](#4-backend-pipeline-7-stages)
-5. [REST API Reference](#5-rest-api-reference)
-6. [Supported Input Formats](#6-supported-input-formats)
-7. [Configuration Reference](#7-configuration-reference)
-8. [Project File Map](#8-project-file-map)
+1. [What Does This App Do?](#1-what-does-this-app-do)
+2. [Supported Input Formats](#2-supported-input-formats)
+3. [Step-by-Step: Upload a File](#3-step-by-step-upload-a-file)
+4. [Step-by-Step: Use a URL or YouTube Link](#4-step-by-step-use-a-url-or-youtube-link)
+5. [Choosing Output Mode](#5-choosing-output-mode)
+6. [Setting Number of Questions](#6-setting-number-of-questions)
+7. [Tracking Job Status](#7-tracking-job-status)
+8. [Viewing & Downloading Results](#8-viewing--downloading-results)
+9. [Dashboard Overview](#9-dashboard-overview)
+10. [Analytics & Geographic Map](#10-analytics--geographic-map)
+11. [Files Manager](#11-files-manager)
+12. [Reviews & Ratings](#12-reviews--ratings)
+13. [Limits & Tips](#13-limits--tips)
+14. [Architecture (for developers)](#14-architecture-for-developers)
 
 ---
 
-## 1. Architecture Overview
+## 1. What Does This App Do?
 
-```
-┌──────────────────────────────────────────────────────────────────────────┐
-│                            USER BROWSER                                  │
-│   React + Vite (port 5173)                                               │
-│   ┌─────────────────────┐        ┌──────────────────────────────────┐   │
-│   │  DocumentUpload.jsx  │        │         JobStatus.jsx            │   │
-│   │  • File / URL input  │        │  • Polls status every 2 s       │   │
-│   │  • Drag-and-drop     │        │  • Shows queued / processing /  │   │
-│   │  • num_questions     │        │    completed / failed badges    │   │
-│   │  • Submit button     │        │  • Markdown preview             │   │
-│   └──────────┬───────────┘        │  • Download PDF / View PDF      │   │
-│              │  POST /api/qa/…    └──────────────────────────────────┘   │
-└──────────────┼──────────────────────────────────────────────────────────┘
-               │ proxy
-               ▼
-┌──────────────────────────────────────────────────────────────────────────┐
-│                         FASTAPI BACKEND  (port 8002)                     │
-│                                                                          │
-│   ┌──────────────┐    ┌────────────────────────┐    ┌────────────────┐  │
-│   │  Rate Limiter│    │   Job Queue (FIFO)      │    │  SQLite DB     │  │
-│   │  (slowapi)   │    │   single worker thread  │    │  jobs.db       │  │
-│   └──────────────┘    └───────────┬────────────┘    └────────────────┘  │
-│                                   │                                      │
-│                    ┌──────────────▼──────────────────────────────────┐  │
-│                    │              PIPELINE  (7 stages)                │  │
-│                    │  1. Generate / load sample PDF                  │  │
-│                    │  2. Extract & clean text  (pypdf)               │  │
-│                    │  3. Split into chunks  (LangChain splitter)     │  │
-│                    │  4. Embed & index  (OpenAI → FAISS)             │  │
-│                    │  5. Generate MCQs  (multi-query RAG + GPT-4o)   │  │
-│                    │  6. Format Markdown                             │  │
-│                    │  7. Convert to PDF  (xhtml2pdf)                 │  │
-│                    └──────────────────────────────────────────────── ┘  │
-└──────────────────────────────────────────────────────────────────────────┘
-```
+Q&A Agent takes **any document, webpage, audio, or video** and generates:
 
-**Key design decisions:**
+| Output | Description |
+|--------|-------------|
+| **MCQ Questions** | Multiple-choice questions with 4 options and a correct answer |
+| **Summary** | Clean, structured plain-text summary of the content |
+| **Both** | MCQ questions + summary in one run |
 
-| Decision | Why |
-|---|---|
-| FIFO job queue | Prevents concurrent OpenAI calls from exhausting rate limits |
-| FAISS local index | No external vector-DB dependency; rebuilt per document |
-| Multi-query RAG | 8 topic queries → balanced coverage of all document chapters |
-| SQLite job store | Zero-config persistence; survives server restarts |
-| Streaming PDF | xhtml2pdf converts Markdown → HTML → PDF in pure Python |
+**Example use cases:**
+- 📚 Students: upload a PDF textbook chapter → get 10 exam-style questions
+- 🎓 Teachers: paste a Wikipedia URL → create a quiz in seconds
+- 🏢 Trainers: upload a training video → generate comprehension questions
+- 🔬 Researchers: drop in a paper → get a structured summary
+- 🎵 Podcasters: upload an MP3 interview → transcribe + summarize
 
 ---
 
-## 2. How to Start the App
+## 2. Supported Input Formats
 
-### Prerequisites
+### 📄 Documents
+| Format | Extension | Notes |
+|--------|-----------|-------|
+| PDF | `.pdf` | Text-based PDFs; scanned images use OCR |
+| Word Document | `.docx` | Paragraphs and headings extracted |
+| Plain Text | `.txt` | Any UTF-8 or Latin-1 text file |
+| Markdown | `.md` | Headings and formatting preserved |
+| ReStructuredText | `.rst` | Common in Python docs |
 
-```bash
-pip install -r requirements.txt     # backend Python deps
-cd frontend && npm install           # frontend JS deps
-```
+### 📊 Spreadsheets
+| Format | Extension | Notes |
+|--------|-----------|-------|
+| Excel (modern) | `.xlsx` | All sheets extracted as text |
+| Excel (legacy) | `.xls` | Excel 97–2003 format supported |
+| CSV | `.csv` | Comma-separated values read as text |
 
-Set your API key in `.env`:
+### 🖼️ Images
+| Format | Extension | Notes |
+|--------|-----------|-------|
+| PNG | `.png` | Text extracted via Groq Vision AI |
+| JPG / JPEG | `.jpg` `.jpeg` | Diagrams, screenshots, photos |
+| WebP | `.webp` | Modern web image format |
 
-```env
-OPENAI_API_KEY=sk-...
-```
+> **How image extraction works:** The image is sent to Groq's Vision API (Llama 4 Scout). The AI reads and describes all visible text, charts, and content.
 
-### Start the backend
+### 🎵 Audio
+| Format | Extension | Notes |
+|--------|-----------|-------|
+| MP3 | `.mp3` | Podcasts, lectures, interviews |
+| WAV | `.wav` | Uncompressed audio |
+| M4A | `.m4a` | Apple audio format |
 
-```bash
-python start_server.py
-# or directly:
-uvicorn api.server:app --host 0.0.0.0 --port 8002 --reload
-```
+> **How audio works:** Speech is transcribed using Groq Whisper (whisper-large-v3), then questions are generated from the transcript.
 
-### Start the frontend
+### 🎬 Video
+| Format | Extension | Notes |
+|--------|-----------|-------|
+| MP4 | `.mp4` | Most common video format |
+| WebM | `.webm` | Web-optimized video |
+| MOV | `.mov` | Apple QuickTime — requires ffmpeg on server |
+| AVI | `.avi` | Legacy Windows format — requires ffmpeg |
+| MKV | `.mkv` | Matroska container — requires ffmpeg |
 
-```bash
-cd frontend
-npm run dev          # starts on http://localhost:5173
-```
+> **How video works:** The audio track is extracted (MP4/WebM natively; MOV/AVI/MKV via ffmpeg), then transcribed with Whisper. If ffmpeg is unavailable for MOV/AVI/MKV, convert to MP4 first.
 
-### Verify everything is running
-
-```
-http://localhost:8002/health   →  {"status":"healthy","version":"1.0.0"}
-http://localhost:8002/docs     →  Swagger UI (all endpoints)
-http://localhost:5173          →  React UI
-```
-
-### Run end-to-end tests (no browser required)
-
-```bash
-python test_e2e.py
-```
-
----
-
-## 3. Step-by-Step UI Walkthrough
-
-### Step 1 — Landing Page
-
-When you open `http://localhost:5173` you see a two-column layout:
-
-- **Left panel** — Upload Document form
-- **Right panel** — "Submit a document to see status" placeholder
-
-The **Generate Questions** button is greyed-out (disabled) until you provide input.
-
-![Landing page](screenshots/01_landing.png)
-
-**What you can see:**
-- Two input-mode tabs: **Local File** (default) and **URL / Source**
-- Drag-and-drop zone accepting PDF, text, doc, sheet, image, audio, or video
-- Number of Questions spinner (default: 5, range: 1–20)
-- Supported Formats list in the blue info box at the bottom
+### 🌐 URLs & YouTube
+| Type | Example |
+|------|---------|
+| Web page | `https://en.wikipedia.org/wiki/Machine_learning` |
+| YouTube video | `https://www.youtube.com/watch?v=...` |
+| YouTube Shorts | `https://youtube.com/shorts/...` |
 
 ---
 
-### Step 2 — Choose Input Mode
+## 3. Step-by-Step: Upload a File
 
-The app supports two distinct ways to provide a document:
+### Step 1 — Open the Pipeline tab
 
-#### Mode A — Local File (default tab)
+![Pipeline Home](screenshots/01_landing.png)
 
-![File upload tab](screenshots/02_file_tab.png)
-
-Click **Local File** (blue, active by default). You can:
-- **Drag and drop** any supported file onto the dashed zone
-- **Click the zone** to open a file picker
-
-#### Mode B — URL / Source
-
-![URL / Source tab](screenshots/03_url_tab.png)
-
-Click **URL / Source** to switch mode. A text field appears where you can paste:
-- A direct PDF URL (`https://example.com/report.pdf`)
-- A website URL (`https://example.com/article`)
-- A YouTube video URL (`https://www.youtube.com/watch?v=...`)
-
-![URL filled with YouTube link](screenshots/04_url_filled.png)
-
-The helper text confirms: *"Supports website URLs, YouTube URLs, and server-accessible local paths."*
+The app opens on the **Pipeline** tab. You'll see two panels:
+- **Left**: where you configure and submit your input
+- **Right**: where the job status and results appear
 
 ---
 
-### Step 3 — Local File Upload
+### Step 2 — Select the File tab
 
-Select your file. The drop zone updates to show the filename:
+![File Upload Tab](screenshots/02_file_upload.png)
 
-![File selected — sample_document.pdf](screenshots/05_file_selected.png)
+Click **"Upload File"** (the first tab in the input panel).
 
-Once a file (or URL) is entered the **Generate Questions** button turns **indigo/purple** and becomes clickable.
-
-**Accepted extensions:**
-
-| Category | Extensions |
-|---|---|
-| Documents | `.pdf`, `.txt`, `.md`, `.rst`, `.docx` |
-| Spreadsheets | `.xlsx`, `.xls`, `.csv` |
-| Images | `.png`, `.jpg`, `.jpeg`, `.webp` |
-| Audio/Video | `.mp3`, `.wav`, `.m4a`, `.mp4`, `.mov`, `.avi`, `.webm`, `.mkv` |
-| URLs | `http://`, `https://` (web pages & YouTube) |
+The drop zone shows all accepted file types. You can:
+- **Drag and drop** a file onto the zone
+- **Click** the zone to open the file browser
 
 ---
 
-### Step 4 — URL / Source Input
+### Step 3 — Choose your file
 
-Paste any supported URL. YouTube transcripts are fetched automatically; web pages are scraped and cleaned.
+![File Selected](screenshots/05_file_selected.png)
 
-![URL example filled](screenshots/04_url_filled.png)
-
----
-
-### Step 5 — Set Number of Questions
-
-Use the **Number of Questions** spinner to choose how many MCQs to generate (1–20). The default is **5**.
-
-![Questions set to 3](screenshots/06_questions_set.png)
-
-> **Tip:** More questions = longer processing time and higher OpenAI token cost. Start with 3–5 for quick results.
+After selecting a file:
+- The filename and size appear below the drop zone
+- A green checkmark confirms the file is accepted
+- If the file is too large (>25 MB) or an unsupported format, an error message appears immediately
 
 ---
 
-### Step 6 — Submit the Job
+### Step 4 — Set options and submit
 
-Click **Generate Questions**. The button changes to **"Submitting…"** and a loading spinner appears while the upload completes.
+![Questions Set](screenshots/06_questions_set.png)
 
-![Submitting state — spinner visible](screenshots/07_submitting.png)
-
-What happens on the backend at this point:
-1. The file is saved to `api/uploads/`
-2. A unique **pipeline ID** (8-char hex) is assigned
-3. The job is inserted into SQLite with status `queued`
-4. A `201 Created` response returns `{ pipeline_id, status, message }`
-5. The right panel switches to the **Job Status** view and begins polling every 2 seconds
+Before submitting:
+1. **Output Mode**: choose Questions, Summary, or Both (see [Section 5](#5-choosing-output-mode))
+2. **Number of questions**: pick 1–20 using the quick buttons or dropdown
+3. Click **Generate** (blue button) to submit
 
 ---
 
-### Step 7 — Queued & Processing States
+## 4. Step-by-Step: Use a URL or YouTube Link
 
-The right panel now shows a **Job Status** card. The job moves through two intermediate states:
+### Step 1 — Select the URL tab
 
-#### Queued
+![URL Tab](screenshots/03_url_tab.png)
 
-The pipeline ID and a yellow **QUEUED** badge appear. Queue position is shown if other jobs are ahead.
-
-#### Processing
-
-The badge turns blue **PROCESSING** and a spinner appears: *"Processing your document…"*
-
-![Processing state with pipeline ID and PROCESSING badge](screenshots/08_queued.png)
-
-During processing the backend executes all 7 pipeline stages (see [section 4](#4-backend-pipeline-7-stages)). Typical durations:
-
-| Document type | ~Time |
-|---|---|
-| 10-page PDF, 5 questions | 20–35 s |
-| Web page, 5 questions | 25–45 s |
-| YouTube video (transcript), 5 questions | 30–60 s |
+Click **"URL / Source"** tab in the input panel.
 
 ---
 
-### Step 8 — Completed: View Results
+### Step 2 — Paste your URL
 
-When the pipeline finishes the badge turns green **COMPLETED**.
+![URL Filled](screenshots/04_url_filled.png)
 
-![Completed with Generated Questions preview](screenshots/10_completed.png)
+Paste any of:
+- A web page URL: `https://example.com/article`
+- A Wikipedia link
+- A YouTube video URL
 
-The status card now shows:
-
-| Field | Description |
-|---|---|
-| **Pipeline ID** | Unique job identifier |
-| **Created At** | When the job was submitted |
-| **Last Updated** | When it completed |
-| **Input Source** | Path/URL of the processed document |
-| **Generated Questions** | First ~500 chars of the Markdown output |
-| **Download PDF** | Green button — saves the PDF to your machine |
-| **View PDF** | Indigo button — opens the PDF in a new browser tab |
-
-Scroll down to see more of the Markdown preview:
-
-![Markdown results scrolled](screenshots/11_markdown_results.png)
-
-**Sample Markdown output structure:**
-
-```markdown
-# Practice Questions
-
-*Source document:* `sample_document.pdf`
-*Generated on:* May 13, 2026 at 18:14 UTC
-*Total questions:* 3
-
----
-## Question 1
-
-**Which of the following is NOT an essential characteristic of cloud
-computing as defined by NIST?**
-
-- **A)** On-Demand Self-Service
-- **B)** Broad Network Access
-- **C)** Dedicated Hardware
-- **D)** Measured Service
-
-**Correct Answer:** C
-
-**Explanation:** NIST defines five essential characteristics: On-Demand
-Self-Service, Broad Network Access, Resource Pooling, Rapid Elasticity,
-and Measured Service. "Dedicated Hardware" is the opposite of cloud
-computing's shared resource model …
-```
+The app automatically detects YouTube links and routes them through the YouTube transcript API.
 
 ---
 
-### Step 9 — Download the PDF
+### Step 3 — Submit
 
-Click **Download PDF** to save a formatted PDF version of the questions to your machine, or **View PDF** to open it directly in the browser.
+Set your output mode and question count, then click **Generate**.
 
-The PDF is stored at `output/<pipeline_id>_qa.pdf` on the server and served via:
-
-```
-GET /api/qa/file/{pipeline_id}/{filename}
-```
+> **Note on YouTube:** Cloud servers are often blocked from fetching YouTube transcripts directly. If you see a "transcript blocked" warning, a manual paste fallback appears — click the video link, copy the transcript from YouTube's "Show transcript" panel, and paste it in.
 
 ---
 
-### Step 10 — Empty Form Guard
+## 5. Choosing Output Mode
 
-If you try to submit without a file or URL, the **Generate Questions** button stays **disabled** (grey). The app enforces input at the UI level before any API call is made.
+![Output Mode](screenshots/03_output_mode_text.png)
 
-![Empty form — button disabled and outlined in red](screenshots/12_empty_form_disabled.png)
+| Mode | What you get |
+|------|-------------|
+| **Questions** (default) | 1–20 MCQ questions, each with 4 options and a marked answer |
+| **Summary** | A structured plain-text summary of the document |
+| **Both** | Summary followed by MCQ questions in one response |
 
----
-
-## 4. Backend Pipeline (7 Stages)
-
-Every submitted job runs through exactly these stages in sequence. Each stage is timed and recorded in `output/pipeline_metrics.json`.
-
-```
-Stage 1  ──►  Stage 2  ──►  Stage 3  ──►  Stage 4
-Generate PDF   Extract text   Split text   Build FAISS
-(skip if       (pypdf +       (LangChain   (OpenAI
-custom input)  cleaning)      splitter)    embeddings)
-
-Stage 4  ──►  Stage 5  ──►  Stage 6  ──►  Stage 7
-Build FAISS   Generate MCQs  Format MD    Convert PDF
-             (RAG + GPT-4o) (output_     (xhtml2pdf)
-                             formatter)
-```
-
-### Stage 1 — Generate Sample PDF
-
-Only runs when no custom input is provided. Uses ReportLab to create a multi-page Cloud Computing reference document covering IaaS, PaaS, SaaS, security, cost management, containers, and networking.
-
-**Skipped when:** user uploads their own file or provides a URL.
-
-### Stage 2 — Extract & Clean Text
-
-Calls `document_loader.load_document(source)` which dispatches to the right handler based on file type:
-
-| Input | Handler |
-|---|---|
-| `.pdf` | pypdf page extraction + hyphen/artifact cleaning |
-| `.txt`, `.md`, `.csv` … | UTF-8 plain text read |
-| `.docx` | python-docx paragraph extraction |
-| `.xlsx` | openpyxl row iteration |
-| `http(s)://` | urllib download → HTML stripping |
-| `youtube.com/…` | youtube-transcript-api |
-| `.png`, `.jpg` … | OpenAI Vision API (text extraction) |
-| `.mp3`, `.mp4` … | OpenAI Whisper (speech-to-text) |
-
-### Stage 3 — Split Text into Chunks
-
-`RecursiveCharacterTextSplitter` divides the cleaned text into overlapping chunks:
-
-```
-chunk_size    = 1000 chars   (configurable via CHUNK_SIZE)
-chunk_overlap = 200  chars   (configurable via CHUNK_OVERLAP)
-separators    = ["\n\n", "\n", ". ", " ", ""]
-```
-
-A 16,000-char document typically produces ~24 chunks.
-
-### Stage 4 — Build FAISS Vector Store
-
-Each chunk is embedded with `text-embedding-3-small` (1,536 dimensions) via OpenAI. The vectors are stored in a FAISS flat-L2 index and persisted to `data/faiss_index/`.
-
-### Stage 5 — Generate MCQ Questions (the AI stage)
-
-This is the core RAG + LLM step:
-
-1. **8 broad topic queries** are run against the FAISS retriever (`k=4` each)
-2. Duplicate chunks are removed (deduplication by first 200 chars)
-3. The unique chunks are assembled into a **context string**
-4. A `ChatPromptTemplate | ChatOpenAI | StrOutputParser` LCEL chain is invoked
-5. GPT-4o returns a **JSON array** of MCQ objects
-6. Each question is validated (required keys, 4 choices, valid correct_answer)
-
-**Question schema:**
-
-```json
-{
-  "question_number": 1,
-  "question": "What is IaaS?",
-  "choices": {
-    "A": "Infrastructure as a Service",
-    "B": "Internet as a Service",
-    "C": "Integration as a Script",
-    "D": "Instance as a Service"
-  },
-  "correct_answer": "A",
-  "explanation": "IaaS provides virtualized compute, storage and networking …"
-}
-```
-
-### Stage 6 — Format as Markdown
-
-`output_formatter.format_questions_as_markdown()` converts the list of question dicts into a structured Markdown document with headers, bold choices, correct-answer highlighting, and explanations.
-
-### Stage 7 — Convert to PDF
-
-`pdf_converter.convert_markdown_to_pdf()` pipeline:
-
-```
-Markdown  ──►  HTML (markdown library)  ──►  PDF (xhtml2pdf)
-```
-
-The PDF is saved to `output/<pipeline_id>_qa.pdf`.
+Click the mode buttons to switch. Your selection persists until you change it.
 
 ---
 
-## 5. REST API Reference
+## 6. Setting Number of Questions
 
-Interactive docs at `http://localhost:8002/docs`
+![Question Count](screenshots/07_questions_mode.png)
 
-![Swagger API documentation](screenshots/13_api_docs.png)
+When **Questions** or **Both** mode is selected:
 
-### Endpoints
+- **Quick buttons**: `5` · `10` · `15` · `20` — click to set instantly
+- **Dropdown**: choose any value from **1 to 20**
 
-#### `GET /health`
-
-Health check.
-
-```json
-{
-  "status": "healthy",
-  "version": "1.0.0",
-  "timestamp": "2026-05-13T18:14:00.539112"
-}
-```
+> Fewer questions = faster response. More questions = broader coverage but may take 10–30 s for large documents.
 
 ---
 
-#### `POST /api/qa/generate`
+## 7. Tracking Job Status
 
-Submit a file for Q&A generation.
+After submitting, the right panel shows real-time job status:
 
-**Request** — `multipart/form-data`
+### Queued
+![Queued](screenshots/08_queued.png)
 
-| Field | Type | Required | Description |
-|---|---|---|---|
-| `file` | binary | Yes | Document file |
-| `num_questions` | integer | No | 1–20, default 5 |
-
-**Response** — `200 OK`
-
-```json
-{
-  "pipeline_id": "82ea14bb",
-  "status": "queued",
-  "created_at": "2026-05-13T18:14:00.539112",
-  "message": "Job queued for 3 question(s). Position in queue: 0"
-}
-```
+Your job is waiting in the processing queue. The queue processes one job at a time.
 
 ---
 
-#### `POST /api/qa/generate-source`
+### Processing
+![Processing](screenshots/09_processing.png)
 
-Submit a URL or local path.
+The pipeline is running through 5 stages:
+1. **Ingestion** — load and extract text from your input
+2. **Chunking** — split text into 1,000-char overlapping pieces
+3. **Embedding** — convert chunks to 384-dim vectors (all-MiniLM-L6-v2)
+4. **Retrieval** — FAISS similarity search to find the most relevant chunks
+5. **Generation** — Groq LLM generates questions/summary from retrieved context
 
-**Request** — `application/json`
-
-```json
-{
-  "source": "https://www.youtube.com/watch?v=dQw4w9WgXcQ",
-  "num_questions": 5
-}
-```
-
-**Response** — same shape as `/api/qa/generate`.
+A spinning indicator and "Processing…" badge show the job is active.
 
 ---
 
-#### `GET /api/qa/status/{pipeline_id}`
+### Completed
+![Completed](screenshots/10_completed.png)
 
-Poll job status. The frontend calls this every 2 seconds.
-
-**Response — completed job**
-
-```json
-{
-  "pipeline_id": "82ea14bb",
-  "status": "completed",
-  "created_at": "2026-05-13T18:14:00.539112",
-  "updated_at": "2026-05-13T18:14:29.085213",
-  "input_source": "C:\\...\\82ea14bb_sample_document.pdf",
-  "result_markdown": "# Practice Questions\n\n...",
-  "result_pdf_path": "C:\\...\\output\\82ea14bb_qa.pdf",
-  "error_message": null,
-  "queue_position": null
-}
-```
-
-**Status values:**
-
-| Value | Meaning |
-|---|---|
-| `queued` | Waiting in the FIFO queue |
-| `processing` | Pipeline running |
-| `completed` | All 7 stages finished successfully |
-| `failed` | An error occurred; see `error_message` |
+A green **"completed"** badge confirms the job finished. The results appear immediately below.
 
 ---
 
-#### `GET /api/qa/download/{pipeline_id}`
+### Failed
 
-Get a signed download URL for the PDF result.
-
-```json
-{
-  "download_url": "/api/qa/file/82ea14bb/82ea14bb_qa.pdf",
-  "filename": "82ea14bb_qa.pdf"
-}
-```
+A red **"failed"** badge appears with a reason (e.g., "Groq API rate limit — retry later"). Wait 60 seconds and re-submit. The app has a 6-level LLM fallback chain, so failures are rare.
 
 ---
 
-#### `GET /api/qa/file/{pipeline_id}/{filename}`
+## 8. Viewing & Downloading Results
 
-Serve the PDF binary. Used by the Download and View PDF buttons.
+![Results](screenshots/11_markdown_results.png)
 
-**Response** — `application/pdf` binary stream.
+Results are displayed as formatted **Markdown**:
+- MCQs show the question, 4 lettered options, and the correct answer highlighted
+- Summaries show structured paragraphs with headers
 
----
-
-### Rate Limits
-
-| Scope | Limit |
-|---|---|
-| Global | 100 requests / minute |
-| Job submission | 10 requests / minute |
-
-Exceeding the limit returns `429 Too Many Requests`.
+**Download options:**
+- **Download Markdown** — saves a `.md` file you can open in any text editor or Notion
+- **Download PDF** — generates a print-ready PDF with formatted questions
 
 ---
 
-## 6. Supported Input Formats
+## 9. Dashboard Overview
 
-| Format | Extension(s) | Notes |
-|---|---|---|
-| PDF | `.pdf` | Multi-page, scanned text extracted via pypdf |
-| Plain text | `.txt`, `.md`, `.rst`, `.csv`, `.json`, `.yaml` | UTF-8, latin-1 fallback |
-| Word | `.docx` | Requires `python-docx` |
-| Excel | `.xlsx`, `.xls` | Requires `openpyxl` |
-| Images | `.png`, `.jpg`, `.jpeg`, `.webp`, `.gif` | OpenAI Vision |
-| Audio | `.mp3`, `.wav`, `.m4a`, `.aac`, `.flac` | OpenAI Whisper |
-| Video | `.mp4`, `.mov`, `.avi`, `.mkv`, `.webm` | OpenAI Whisper (audio track) |
-| Web page | `http(s)://` | HTML stripped, visible text extracted |
-| YouTube | `https://youtube.com/watch?v=…` | Official captions via `youtube-transcript-api` |
+Click the **Dashboard** tab in the top navigation.
 
----
+### Stats Cards
 
-## 7. Configuration Reference
+The top row shows aggregate pipeline statistics:
 
-All settings live in `.env` (copied from `.env.example`):
-
-| Variable | Default | Description |
-|---|---|---|
-| `OPENAI_API_KEY` | *(required)* | OpenAI secret key |
-| `OPENAI_MODEL` | `gpt-4o` | Chat model for question generation |
-| `OPENAI_EMBEDDING_MODEL` | `text-embedding-3-small` | Embedding model for FAISS |
-| `NUM_QUESTIONS` | `10` | Default MCQ count per run |
-| `CHUNK_SIZE` | `1000` | Max characters per text chunk |
-| `CHUNK_OVERLAP` | `200` | Overlap between adjacent chunks |
-| `TOP_K_RETRIEVAL` | `15` | Chunks returned per similarity query |
-| `TEMPERATURE` | `0.3` | LLM sampling temperature |
-| `LOG_LEVEL` | `INFO` | Console log verbosity |
-| `LOG_TO_FILE` | `true` | Write rotating JSON log to `logs/` |
-| `LANGCHAIN_TRACING_V2` | `false` | Enable LangSmith tracing |
-| `LANGCHAIN_API_KEY` | *(optional)* | LangSmith API key |
-| `LANGCHAIN_PROJECT` | `qa-agent` | LangSmith project name |
+| Card | Description |
+|------|-------------|
+| Total Jobs | All jobs submitted since the app launched |
+| Completed | Successfully finished jobs |
+| Failed | Failed jobs (usually API rate limits) |
+| Pending | Jobs currently queued or processing |
+| Cache Hits | Jobs served from cache (same document submitted before) |
+| Avg Duration | Average pipeline completion time |
 
 ---
 
-## 8. Project File Map
+### Jobs by Output Mode
+
+A bar chart showing the split between Questions / Summary / Both modes.
+
+---
+
+### Avg Stage Duration
+
+Shows how long each pipeline stage takes on average:
+- `generation` — LLM call (usually the longest: 1–4 s)
+- `ingestion` — file loading and text extraction
+- `retrieval` — FAISS vector search
+- `output` — formatting results
+
+---
+
+### Recent Jobs Table
+
+The last 3 submitted jobs with: Pipeline ID, Status, Type, Duration, Cache, and Reason.
+
+Click **"View all jobs →"** to expand to all historical jobs. Click **"Show less"** to collapse.
+
+---
+
+### Cache Status Banner
+
+Shows whether Redis cache is active or in-memory mode. Repeated submissions of the same document are served instantly from cache (shown as ⚡ in the jobs table).
+
+---
+
+## 10. Analytics & Geographic Map
+
+Click **Analytics** in the Dashboard tab navigation.
+
+### KPI Cards
+
+| Metric | Description |
+|--------|-------------|
+| Total Requests | All API requests logged |
+| Countries | Number of unique countries that have accessed the app |
+| Avg Latency | Average response time for all requests |
+| Active Locations | Number of city-level locations with lat/lon data |
+
+---
+
+### Access by Location (World Map)
+
+The world map shows two layers:
+- **Country heat map** (indigo fill): countries shaded by request volume
+- **Red circles**: exact city-level access points sized by request count
+
+**Hover** over any country or circle to see a tooltip with:
+- Country / City / Region
+- Total requests and % share
+- Average response latency
+- Q&A vs Summary vs Both breakdown
+
+Below the map, a table lists the **Top 10 Countries** with request count, share percentage bar, and average latency.
+
+> **Note:** Location pins appear only for new requests after deployment (requires lat/lon data from ip-api.com).
+
+---
+
+### Requests by Type Chart
+
+Dual-axis chart:
+- **Bars (left axis)**: request count per type (Q&A / Summary / Both)
+- **Amber line (right axis)**: average latency in ms per type
+
+The table below the chart shows exact values for count, share %, and avg latency.
+
+---
+
+### Latency Trend (last 24 h)
+
+Line chart showing average response time per hour over the last 24 hours. Spikes indicate server load or LLM provider delays.
+
+---
+
+### Recent Accesses Table
+
+Last 20 requests with:
+- Country and city (with coordinates if available)
+- Request type (Q&A / Summary / Both)
+- Latency (colour-coded: green < 500 ms · yellow < 1 s · red > 1 s)
+- Timestamp
+
+---
+
+## 11. Files Manager
+
+Click **Files** in the Dashboard tab navigation.
+
+Shows all files uploaded through the Pipeline:
+
+| Column | Description |
+|--------|-------------|
+| Filename | Original uploaded filename |
+| Size | File size in KB or MB |
+| Output Mode | What was generated from this file |
+| Status | Job outcome (completed / failed) |
+| Date | Upload date |
+| 🗑 | Delete button — removes the file record |
+
+**Deleting a file:** Click the trash icon → confirm in the modal. This removes the database record. The generated output (questions/summary) is not deleted.
+
+---
+
+## 12. Reviews & Ratings
+
+At the bottom of the **Overview** tab:
+
+### Leave a Review
+
+1. Enter your name (optional)
+2. Click stars to set your rating (1–5)
+3. Select a use case from the dropdown
+4. Write an optional review
+5. Click **Submit Review**
+
+### View Reviews
+
+Reviews appear as cards showing:
+- Reviewer name and initials avatar
+- Star rating
+- Use case tag
+- Review text
+- Replies from the team (indented with a blue left border)
+
+You can reply to any review by clicking **"↩ Reply"** and entering your text.
+
+---
+
+## 13. Limits & Tips
+
+| Limit | Value |
+|-------|-------|
+| Max file size | **25 MB** |
+| Max questions | **20** |
+| Min questions | **1** |
+| Rate limit | **10 requests/hour** per user |
+| Spike limit | **3 requests/sec** |
+
+**Tips for best results:**
+- ✅ Use text-based PDFs (not scanned images) for fastest processing
+- ✅ For audio/video, 1–5 minute clips produce the best questions (longer = more questions possible)
+- ✅ Wikipedia URLs work very well — paste the topic URL directly
+- ✅ For spreadsheets, put important data in the first rows (top rows get most context weight)
+- ⚠️ YouTube transcripts may require manual paste on cloud servers (see Section 4)
+- ⚠️ MOV/AVI/MKV video files require ffmpeg on the server; if unavailable, convert to MP4 first
+- ⚠️ If you get a rate limit error, wait 60 seconds and retry — the 6-level LLM fallback handles most cases
+
+---
+
+## 14. Architecture (for developers)
+
+### System Overview
 
 ```
-Q&A_Agent/
-│
-├── main.py                     CLI entry point (7-stage pipeline, no API)
-├── start_server.py             Convenience: pip-install + uvicorn
-├── run_all.py                  Batch runner for multiple documents
-├── config.py                   Centralised env-var configuration
-├── test_e2e.py                 End-to-end API test suite
-│
-├── api/
-│   ├── server.py               FastAPI app (routes, queue, SQLite)
-│   ├── jobs.db                 SQLite pipeline-job store
-│   └── uploads/                Uploaded files (per-job prefix)
-│
-├── src/
-│   ├── ingestion/
-│   │   ├── document_loader.py  Universal loader (11 input types)
-│   │   ├── pdf_extractor.py    pypdf extraction + text cleaning
-│   │   └── pdf_generator.py    Sample Cloud Computing PDF (ReportLab)
-│   ├── retrieval/
-│   │   └── embeddings_store.py Text splitting + FAISS build/load
-│   ├── generation/
-│   │   └── qa_generator.py     Multi-query RAG + GPT-4o LCEL chain
-│   ├── output/
-│   │   ├── output_formatter.py Questions → Markdown
-│   │   └── pdf_converter.py    Markdown → HTML → PDF (xhtml2pdf)
-│   └── pipeline/
-│       └── stages.py           Orchestration: wraps each stage with metrics
-│
-├── observability/
-│   ├── logger.py               Structured logging (console + JSON Lines)
-│   ├── metrics.py              Per-stage timing + metadata
-│   └── langsmith_tracer.py     LangSmith init + connectivity check
-│
-├── frontend/
-│   ├── src/
-│   │   ├── App.jsx             Root: two-column layout, job-ID state
-│   │   └── components/
-│   │       ├── DocumentUpload.jsx   Upload form (file + URL modes)
-│   │       └── JobStatus.jsx        Real-time polling status card
-│   └── vite.config.js          Dev server + API proxy config
-│
-├── data/
-│   ├── sample_document.pdf     Auto-generated Cloud Computing PDF
-│   └── faiss_index/            Persisted FAISS index (rebuilt per doc)
-│
-├── output/                     Generated Markdown, PDFs, metrics JSON
-├── logs/                       Rotating JSON-Lines application log
-└── docs/
-    ├── APP_GUIDE.md            ← this file
-    └── screenshots/            UI screenshots referenced above
+┌─────────────────────────────────────────────────────────────────┐
+│  USER BROWSER (React + Vite → Vercel)                           │
+│                                                                  │
+│  ┌───────────────────┐    ┌──────────────────────────────────┐  │
+│  │  DocumentUpload   │    │  JobStatus (polls /api/status)   │  │
+│  │  • File / URL /   │    │  • queued → processing →         │  │
+│  │    YouTube input  │    │    completed / failed            │  │
+│  │  • 20 formats     │    │  • Markdown preview              │  │
+│  │  • 1–20 questions │    │  • Download MD / PDF             │  │
+│  └────────┬──────────┘    └──────────────────────────────────┘  │
+│           │ POST /api/qa/generate                                │
+└───────────┼─────────────────────────────────────────────────────┘
+            ▼ (Vercel proxy → Render)
+┌─────────────────────────────────────────────────────────────────┐
+│  FASTAPI (Python 3.12 → Render free tier)                       │
+│                                                                  │
+│  WAF → Rate Limit → Spike Arrest → Validate                     │
+│           │                                                      │
+│           ▼                                                      │
+│  ┌──────────────────────────────────────────────────────────┐   │
+│  │  LANGGRAPH PIPELINE                                       │   │
+│  │                                                           │   │
+│  │  ingest_document                                          │   │
+│  │    ├── PDF (pypdf)                                        │   │
+│  │    ├── DOCX (python-docx)                                 │   │
+│  │    ├── XLSX/XLS (openpyxl/xlrd)                          │   │
+│  │    ├── Image (Groq Vision/Llama 4 Scout)                  │   │
+│  │    ├── Audio/MP4/WebM (Groq Whisper)                      │   │
+│  │    ├── MOV/AVI/MKV (ffmpeg → WAV → Whisper)               │   │
+│  │    ├── URL (urllib → infer format)                        │   │
+│  │    └── YouTube (4-layer transcript fallback)              │   │
+│  │         │                                                  │   │
+│  │  split_and_embed                                          │   │
+│  │    ├── RecursiveCharacterTextSplitter (1000 / 200 chars)  │   │
+│  │    └── all-MiniLM-L6-v2 → FAISS (in-memory, per-job)     │   │
+│  │         │                                                  │   │
+│  │  retrieve_context                                         │   │
+│  │    └── FAISS similarity search (top-15 chunks)            │   │
+│  │         │                                                  │   │
+│  │  generate                                                 │   │
+│  │    ├── 1. groq/llama-3.3-70b-versatile  (~600ms)         │   │
+│  │    ├── 2. groq/llama-3.1-8b-instant     (~150ms)         │   │
+│  │    ├── 3. groq/gemma2-9b-it             (~350ms)         │   │
+│  │    ├── 4. gemini-2.5-flash              (~800ms)         │   │
+│  │    ├── 5. groq/llama-3.2-3b-preview     (~100ms)         │   │
+│  │    └── 6. huggingface/Kimi-K2           (2000ms+)        │   │
+│  │         │                                                  │   │
+│  │  format_output → Markdown + PDF                           │   │
+│  └──────────────────────────────────────────────────────────┘   │
+│           │                                                      │
+│  PostgreSQL (Render)                                             │
+│    ├── qa_jobs          (job status + results)                   │
+│    ├── qa_stage_timings (per-stage latency)                      │
+│    ├── qa_reviews       (user ratings + replies)                 │
+│    ├── uploaded_files   (file metadata)                          │
+│    └── access_logs      (IP + geo + latency per request)         │
+│                                                                  │
+│  LangSmith → pipeline traces + span timings                      │
+└─────────────────────────────────────────────────────────────────┘
 ```
 
----
+### Key Design Decisions
 
-*Generated on 2026-05-13. All screenshots captured against a live instance
-running on `localhost:8002` (backend) and `localhost:5174` (static build).*
+| Decision | Choice | Why |
+|----------|--------|-----|
+| Vector DB | **FAISS (in-memory)** | Zero cost, no server, sub-ms search, perfect for per-job ephemeral use |
+| Embeddings | **all-MiniLM-L6-v2** | Free local model, 384-dim, 50–200 ms on CPU |
+| Primary LLM | **Groq/llama-3.3-70b** | Groq LPU = 10× faster than GPU, 400–900 ms generation |
+| Fallback chain | **6 providers** | Handles rate limits gracefully; Groq has 4 independent quotas |
+| DB | **PostgreSQL + SQLite fallback** | Persistent analytics; SQLite for local dev without PG |
+| Cache | **Redis + in-memory LRU** | Repeated documents skip the full pipeline |
+| Deployment | **Render + Vercel (free tier)** | Zero cost for hobby/demo scale |
+
+### FAISS Architecture Detail
+
+```
+Per-job FAISS lifecycle (in-memory only, no disk persistence):
+
+  Document text
+       │
+       ▼
+  RecursiveCharacterTextSplitter
+  chunk_size=1000, overlap=200
+       │  N chunks (e.g., 15–80 for a typical PDF)
+       ▼
+  sentence-transformers/all-MiniLM-L6-v2
+  384-dimensional embeddings, CPU, ~100ms/doc
+       │
+       ▼
+  FAISS.IndexFlatL2 (exact L2 nearest-neighbour)
+  in-memory Python object, ~0.1 ms/query
+       │
+  8 × similarity_search("topic query", k=15)
+       │  120 candidate chunks
+       ▼
+  Deduplicate + rank
+       │  top-30 unique chunks
+       ▼
+  LLM (Groq) generates questions/summary
+       │
+       ▼  FAISS object garbage-collected
+```
+
+Each job gets its own isolated FAISS instance. No shared state. No disk writes. No race conditions with concurrent jobs.
+
+### CI/CD Pipeline
+
+```
+git push → GitHub Actions
+  ├── trigger Render deploy hook (backend)
+  └── vercel pull → vercel build → vercel deploy (frontend)
+```
+
+Both deploy in parallel. Backend deploy takes ~3 min (Python package install). Frontend deploy takes ~45 s.
