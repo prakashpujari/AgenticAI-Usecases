@@ -966,25 +966,34 @@ def get_analytics_stats() -> dict:
                     cur.execute("SELECT COUNT(*) FROM access_logs")
                     total = cur.fetchone()[0] or 0
 
-                    # By country
+                    # By country (with avg latency, exclude unmapped local entries)
                     cur.execute("""
-                        SELECT country_code, country, COUNT(*) AS cnt
+                        SELECT country_code, country,
+                               COUNT(*) AS cnt,
+                               ROUND(AVG(NULLIF(latency_ms, 0))::numeric, 0)::float AS avg_ms
                         FROM access_logs
                         WHERE country_code IS NOT NULL
+                          AND country_code != 'LO'
                         GROUP BY country_code, country
                         ORDER BY cnt DESC LIMIT 50
                     """)
                     by_country = [
-                        {"country_code": r[0], "country": r[1], "count": r[2]}
+                        {"country_code": r[0], "country": r[1],
+                         "count": r[2], "avg_ms": float(r[3] or 0)}
                         for r in cur.fetchall()
                     ]
 
-                    # By request type
+                    # By request type (with avg latency)
                     cur.execute("""
-                        SELECT COALESCE(request_type,'unknown') AS rt, COUNT(*) AS cnt
+                        SELECT COALESCE(request_type,'unknown') AS rt,
+                               COUNT(*) AS cnt,
+                               ROUND(AVG(NULLIF(latency_ms, 0))::numeric, 0)::float AS avg_ms
                         FROM access_logs GROUP BY rt ORDER BY cnt DESC
                     """)
-                    by_type = [{"type": r[0], "count": r[1]} for r in cur.fetchall()]
+                    by_type = [
+                        {"type": r[0], "count": r[1], "avg_ms": float(r[2] or 0)}
+                        for r in cur.fetchall()
+                    ]
 
                     # Latency over last 24 h (hourly buckets)
                     cur.execute("""
@@ -1028,12 +1037,15 @@ def get_analytics_stats() -> dict:
         conn.row_factory = sqlite3.Row
         total = conn.execute("SELECT COUNT(*) FROM access_logs").fetchone()[0] or 0
         by_country = [dict(r) for r in conn.execute("""
-            SELECT country_code, country, COUNT(*) AS cnt
-            FROM access_logs WHERE country_code IS NOT NULL
-            GROUP BY country_code, country ORDER BY cnt DESC LIMIT 50
+            SELECT country_code, country, COUNT(*) AS count,
+                   AVG(CASE WHEN latency_ms > 0 THEN latency_ms END) AS avg_ms
+            FROM access_logs
+            WHERE country_code IS NOT NULL AND country_code != 'LO'
+            GROUP BY country_code, country ORDER BY count DESC LIMIT 50
         """).fetchall()]
         by_type = [dict(r) for r in conn.execute("""
-            SELECT COALESCE(request_type,'unknown') AS type, COUNT(*) AS count
+            SELECT COALESCE(request_type,'unknown') AS type, COUNT(*) AS count,
+                   AVG(CASE WHEN latency_ms > 0 THEN latency_ms END) AS avg_ms
             FROM access_logs GROUP BY request_type ORDER BY count DESC
         """).fetchall()]
         recent = [dict(r) for r in conn.execute("""

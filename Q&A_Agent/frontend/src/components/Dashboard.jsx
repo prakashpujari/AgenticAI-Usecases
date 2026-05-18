@@ -5,7 +5,7 @@ import {
   XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, Legend
 } from 'recharts'
 import {
-  ComposableMap, Geographies, Geography, ZoomableGroup
+  ComposableMap, Geographies, Geography
 } from 'react-simple-maps'
 
 const REFRESH_MS = 30_000
@@ -308,53 +308,144 @@ function ReviewCard({ review, onReplyPosted }) {
 
 // ── World Map ─────────────────────────────────────────────────────────────────
 
-function WorldMap({ byCountry }) {
-  // Build numeric-id → count map (world-atlas geo.id is the 3-digit ISO numeric)
-  const countMap = {}
+function WorldMap({ byCountry, total }) {
+  const [tooltip, setTooltip] = useState(null)   // { name, count, pct, avg_ms, x, y }
+
+  // Build numeric-id → row map  (world-atlas geo.id is the 3-digit ISO numeric)
+  const dataByNum = {}
   ;(byCountry || []).forEach(c => {
     const num = A2_TO_NUM[c.country_code]
-    if (num) countMap[num] = (countMap[num] || 0) + c.count
+    if (num) dataByNum[num] = c
   })
-  const maxCount = Math.max(1, ...Object.values(countMap))
+  const maxCount = Math.max(1, ...Object.values(dataByNum).map(c => c.count))
+
+  if (!byCountry || byCountry.length === 0) {
+    return (
+      <div className="bg-white rounded-xl border border-gray-200 p-5">
+        <h3 className="text-sm font-semibold text-gray-700 mb-3">Access by Location</h3>
+        <div className="text-center text-gray-400 text-sm py-12">
+          No geographic data yet — submit a job from the app to populate this map.
+        </div>
+      </div>
+    )
+  }
 
   return (
-    <div className="bg-white rounded-xl border border-gray-200 p-5">
-      <h3 className="text-sm font-semibold text-gray-700 mb-3">Access by Location</h3>
-      <ComposableMap projectionConfig={{ scale: 140 }} style={{ width: '100%', height: 'auto' }}>
-        <ZoomableGroup>
-          <Geographies geography={GEO_URL}>
-            {({ geographies }) =>
-              geographies.map(geo => {
-                // geo.id is the 3-digit ISO numeric code (may be number or string)
-                const geoId = String(geo.id).padStart(3, '0')
-                const count = countMap[geoId] || 0
-                const intensity = count > 0 ? 0.25 + 0.75 * (count / maxCount) : 0
-                return (
-                  <Geography key={geo.rsmKey} geography={geo}
-                    fill={count > 0 ? `rgba(99,102,241,${intensity.toFixed(2)})` : '#E5E7EB'}
-                    stroke="#fff" strokeWidth={0.3}
-                    style={{
-                      default: { outline: 'none' },
-                      hover:   { fill: '#4F46E5', outline: 'none' },
-                      pressed: { outline: 'none' },
-                    }}
-                  />
-                )
-              })
-            }
-          </Geographies>
-        </ZoomableGroup>
-      </ComposableMap>
-      {/* Top countries legend */}
-      {byCountry?.length > 0 && (
-        <div className="mt-3 flex flex-wrap gap-2">
-          {byCountry.slice(0, 10).map(c => (
-            <span key={c.country_code} className="text-xs px-2 py-0.5 bg-indigo-50 text-indigo-700 rounded-full">
-              {c.country || c.country_code} · {c.count}
-            </span>
-          ))}
+    <div className="bg-white rounded-xl border border-gray-200 p-5 relative">
+      <h3 className="text-sm font-semibold text-gray-700 mb-1">Access by Location</h3>
+      <p className="text-xs text-gray-400 mb-3">Hover a country for details</p>
+
+      {/* Tooltip */}
+      {tooltip && (
+        <div
+          className="absolute z-20 bg-gray-900 text-white text-xs rounded-lg px-3 py-2 pointer-events-none shadow-lg"
+          style={{ left: tooltip.x + 12, top: tooltip.y - 40 }}
+        >
+          <p className="font-semibold">{tooltip.name}</p>
+          <p>{tooltip.count} request{tooltip.count !== 1 ? 's' : ''} · {tooltip.pct}%</p>
+          {tooltip.avg_ms > 0 && <p>Avg latency: {tooltip.avg_ms.toFixed(0)} ms</p>}
         </div>
       )}
+
+      {/* Map — no ZoomableGroup (removed in react-simple-maps v3) */}
+      <ComposableMap
+        projection="geoMercator"
+        projectionConfig={{ scale: 130, center: [10, 20] }}
+        width={780}
+        height={380}
+        style={{ width: '100%', height: 'auto' }}
+      >
+        <Geographies geography={GEO_URL}>
+          {({ geographies }) =>
+            geographies.map(geo => {
+              const geoId = geo.id != null
+                ? String(parseInt(String(geo.id), 10)).padStart(3, '0')
+                : ''
+              const row   = dataByNum[geoId]
+              const count = row?.count || 0
+              const intensity = count > 0 ? 0.25 + 0.75 * (count / maxCount) : 0
+              return (
+                <Geography
+                  key={geo.rsmKey}
+                  geography={geo}
+                  fill={count > 0 ? `rgba(79,70,229,${intensity.toFixed(2)})` : '#E5E7EB'}
+                  stroke="#fff"
+                  strokeWidth={0.4}
+                  style={{
+                    default: { outline: 'none' },
+                    hover:   { fill: count > 0 ? '#312e81' : '#D1D5DB', outline: 'none', cursor: count > 0 ? 'pointer' : 'default' },
+                    pressed: { outline: 'none' },
+                  }}
+                  onMouseEnter={e => {
+                    if (!count) return
+                    const pct = total > 0 ? ((count / total) * 100).toFixed(1) : 0
+                    setTooltip({
+                      name:   geo.properties.name || geoId,
+                      count,
+                      pct,
+                      avg_ms: row?.avg_ms || 0,
+                      x: e.clientX - e.currentTarget.closest('.relative').getBoundingClientRect().left,
+                      y: e.clientY - e.currentTarget.closest('.relative').getBoundingClientRect().top,
+                    })
+                  }}
+                  onMouseLeave={() => setTooltip(null)}
+                />
+              )
+            })
+          }
+        </Geographies>
+      </ComposableMap>
+
+      {/* Colour legend */}
+      <div className="flex items-center gap-2 mt-2">
+        <span className="text-xs text-gray-400">Less</span>
+        <div className="flex gap-0.5">
+          {[0.25, 0.4, 0.55, 0.7, 0.85, 1.0].map(a => (
+            <div key={a} className="w-5 h-3 rounded-sm" style={{ background: `rgba(79,70,229,${a})` }} />
+          ))}
+        </div>
+        <span className="text-xs text-gray-400">More</span>
+      </div>
+
+      {/* Country stats table */}
+      <div className="mt-4 overflow-x-auto">
+        <table className="w-full text-xs">
+          <thead>
+            <tr className="text-gray-500 border-b border-gray-100">
+              <th className="text-left py-1 pr-3">Country</th>
+              <th className="text-right py-1 pr-3">Requests</th>
+              <th className="text-right py-1 pr-3">Share</th>
+              <th className="text-right py-1">Avg Latency</th>
+            </tr>
+          </thead>
+          <tbody>
+            {byCountry.slice(0, 10).map(c => {
+              const pct = total > 0 ? ((c.count / total) * 100).toFixed(1) : 0
+              return (
+                <tr key={c.country_code} className="border-b border-gray-50 hover:bg-gray-50">
+                  <td className="py-1.5 pr-3 font-medium text-gray-700">
+                    <span className="mr-1 text-gray-400 font-mono">{c.country_code}</span>
+                    {c.country || c.country_code}
+                  </td>
+                  <td className="py-1.5 pr-3 text-right text-gray-600">{c.count}</td>
+                  <td className="py-1.5 pr-3 text-right">
+                    <div className="flex items-center justify-end gap-1">
+                      <div className="w-12 bg-gray-100 rounded-full h-1.5">
+                        <div className="h-1.5 rounded-full bg-indigo-500"
+                          style={{ width: `${Math.min(100, pct * 2)}%` }} />
+                      </div>
+                      <span className="text-gray-500 w-8 text-right">{pct}%</span>
+                    </div>
+                  </td>
+                  <td className="py-1.5 text-right font-mono text-gray-500">
+                    {c.avg_ms > 0 ? `${c.avg_ms.toFixed(0)} ms` : '—'}
+                  </td>
+                </tr>
+              )
+            })}
+          </tbody>
+        </table>
+      </div>
     </div>
   )
 }
@@ -378,56 +469,110 @@ function AnalyticsSection() {
   if (loading) return <div className="text-center text-gray-400 py-8">Loading analytics…</div>
   if (!data)   return <div className="text-center text-gray-400 py-8">No analytics data yet</div>
 
-  const typeChartData = (data.by_type || []).map(t => ({ name: t.type || 'unknown', requests: t.count }))
-  const latencyData   = (data.latency_trend || []).map(t => ({ time: t.hour?.slice(11, 16) || '', ms: t.avg_ms || 0 }))
+  const total       = data.total_requests ?? 0
+  const typeData    = (data.by_type || []).map(t => ({
+    name:     t.type || 'unknown',
+    requests: t.count,
+    avg_ms:   Math.round(t.avg_ms || 0),
+  }))
+  const latencyData = (data.latency_trend || [])
+    .filter(t => t.avg_ms > 0)
+    .map(t => ({ time: (t.hour || '').slice(11, 16) || t.hour, ms: Math.round(t.avg_ms || 0) }))
+
+  const overallAvgMs = typeData.length
+    ? Math.round(typeData.reduce((s, t) => s + t.avg_ms * t.requests, 0) /
+        Math.max(1, typeData.reduce((s, t) => s + t.requests, 0)))
+    : 0
 
   return (
     <div className="space-y-6">
       {/* KPI counters */}
       <div className="grid grid-cols-2 sm:grid-cols-4 gap-4">
-        <StatCard label="Total Requests" value={data.total_requests ?? 0} color="indigo" />
-        <StatCard label="Countries"     value={(data.by_country || []).length} color="green" />
-        <StatCard label="Avg Latency"   value={latencyData.length ? `${(latencyData.reduce((a,b) => a+b.ms,0)/latencyData.length).toFixed(0)} ms` : '—'} color="gray" />
-        <StatCard label="Request Types" value={(data.by_type || []).length} color="purple" />
+        <StatCard label="Total Requests" value={total} color="indigo" />
+        <StatCard label="Countries"      value={(data.by_country || []).length} color="green" />
+        <StatCard label="Avg Latency"    value={overallAvgMs > 0 ? `${overallAvgMs} ms` : '—'} color="gray" />
+        <StatCard label="Request Types"  value={(data.by_type || []).length} color="purple" />
       </div>
 
-      {/* World map */}
-      <WorldMap byCountry={data.by_country} />
+      {/* World map + country table */}
+      <WorldMap byCountry={data.by_country} total={total} />
 
       {/* Charts row */}
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
-        {/* Request type bar chart */}
+
+        {/* Request type — count + latency combined */}
         <div className="bg-white rounded-xl border border-gray-200 p-5">
-          <h3 className="text-sm font-semibold text-gray-700 mb-4">Requests by Type</h3>
-          {typeChartData.length === 0
+          <h3 className="text-sm font-semibold text-gray-700 mb-1">Requests by Type</h3>
+          <p className="text-xs text-gray-400 mb-4">Bars = request count · line = avg latency (ms)</p>
+          {typeData.length === 0
             ? <p className="text-sm text-gray-400">No data yet</p>
             : (
-              <ResponsiveContainer width="100%" height={200}>
-                <BarChart data={typeChartData} margin={{ top: 0, right: 10, left: -20, bottom: 0 }}>
-                  <CartesianGrid strokeDasharray="3 3" stroke="#f0f0f0" />
-                  <XAxis dataKey="name" tick={{ fontSize: 11 }} />
-                  <YAxis tick={{ fontSize: 11 }} />
-                  <Tooltip />
-                  <Bar dataKey="requests" fill="#6366f1" radius={[4,4,0,0]} />
-                </BarChart>
-              </ResponsiveContainer>
+              <>
+                <ResponsiveContainer width="100%" height={180}>
+                  <BarChart data={typeData} margin={{ top: 0, right: 30, left: -10, bottom: 0 }}>
+                    <CartesianGrid strokeDasharray="3 3" stroke="#f0f0f0" />
+                    <XAxis dataKey="name" tick={{ fontSize: 11 }} />
+                    <YAxis yAxisId="left" tick={{ fontSize: 11 }} />
+                    <YAxis yAxisId="right" orientation="right" tick={{ fontSize: 11 }} unit="ms" />
+                    <Tooltip
+                      formatter={(val, name) =>
+                        name === 'avg_ms' ? [`${val} ms`, 'Avg Latency'] : [val, 'Requests']
+                      }
+                    />
+                    <Legend wrapperStyle={{ fontSize: 11 }} />
+                    <Bar yAxisId="left" dataKey="requests" fill="#6366f1" radius={[4,4,0,0]} name="Requests" />
+                    <Line yAxisId="right" type="monotone" dataKey="avg_ms" stroke="#f59e0b"
+                      strokeWidth={2} dot={{ r: 4, fill: '#f59e0b' }} name="Avg Latency (ms)" />
+                  </BarChart>
+                </ResponsiveContainer>
+                {/* Per-type detail table */}
+                <table className="w-full text-xs mt-3">
+                  <thead>
+                    <tr className="text-gray-500 border-b border-gray-100">
+                      <th className="text-left py-1">Type</th>
+                      <th className="text-right py-1">Count</th>
+                      <th className="text-right py-1">Share</th>
+                      <th className="text-right py-1">Avg Latency</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {typeData.map(t => {
+                      const pct = total > 0 ? ((t.requests / total) * 100).toFixed(1) : 0
+                      return (
+                        <tr key={t.name} className="border-b border-gray-50">
+                          <td className="py-1 pr-2">
+                            <span className="px-1.5 py-0.5 bg-indigo-50 text-indigo-700 rounded">{t.name}</span>
+                          </td>
+                          <td className="py-1 text-right text-gray-700 font-medium">{t.requests}</td>
+                          <td className="py-1 text-right text-gray-500">{pct}%</td>
+                          <td className="py-1 text-right font-mono text-gray-500">
+                            {t.avg_ms > 0 ? `${t.avg_ms} ms` : '—'}
+                          </td>
+                        </tr>
+                      )
+                    })}
+                  </tbody>
+                </table>
+              </>
             )
           }
         </div>
 
-        {/* Latency line chart */}
+        {/* Latency trend over time */}
         <div className="bg-white rounded-xl border border-gray-200 p-5">
-          <h3 className="text-sm font-semibold text-gray-700 mb-4">Avg Latency (last 24 h)</h3>
+          <h3 className="text-sm font-semibold text-gray-700 mb-1">Latency Trend (last 24 h)</h3>
+          <p className="text-xs text-gray-400 mb-4">Average response time per hour</p>
           {latencyData.length === 0
-            ? <p className="text-sm text-gray-400">No latency data yet</p>
+            ? <p className="text-sm text-gray-400">No latency data yet — submit a job first</p>
             : (
-              <ResponsiveContainer width="100%" height={200}>
-                <LineChart data={latencyData} margin={{ top: 0, right: 10, left: -20, bottom: 0 }}>
+              <ResponsiveContainer width="100%" height={180}>
+                <LineChart data={latencyData} margin={{ top: 0, right: 10, left: -10, bottom: 0 }}>
                   <CartesianGrid strokeDasharray="3 3" stroke="#f0f0f0" />
                   <XAxis dataKey="time" tick={{ fontSize: 11 }} />
                   <YAxis tick={{ fontSize: 11 }} unit="ms" />
                   <Tooltip formatter={v => [`${v} ms`, 'Avg Latency']} />
-                  <Line type="monotone" dataKey="ms" stroke="#6366f1" strokeWidth={2} dot={false} />
+                  <Line type="monotone" dataKey="ms" stroke="#6366f1" strokeWidth={2}
+                    dot={{ r: 3, fill: '#6366f1' }} activeDot={{ r: 5 }} />
                 </LineChart>
               </ResponsiveContainer>
             )
@@ -444,26 +589,38 @@ function AnalyticsSection() {
           <div className="overflow-x-auto">
             <table className="w-full text-xs">
               <thead>
-                <tr className="bg-gray-50 text-gray-500 uppercase tracking-wider">
-                  <th className="px-4 py-2 text-left">Country</th>
-                  <th className="px-4 py-2 text-left">City</th>
-                  <th className="px-4 py-2 text-left">Type</th>
+                <tr className="bg-gray-50 text-gray-500 text-left uppercase tracking-wider">
+                  <th className="px-4 py-2">Country</th>
+                  <th className="px-4 py-2">City</th>
+                  <th className="px-4 py-2">Request Type</th>
                   <th className="px-4 py-2 text-right">Latency</th>
                   <th className="px-4 py-2 text-right">Time</th>
                 </tr>
               </thead>
               <tbody className="divide-y divide-gray-50">
-                {data.recent.map((r, i) => (
-                  <tr key={i} className="hover:bg-gray-50">
-                    <td className="px-4 py-2">{r.country || '—'}</td>
-                    <td className="px-4 py-2 text-gray-500">{r.city || '—'}</td>
-                    <td className="px-4 py-2">
-                      <span className="px-1.5 py-0.5 bg-indigo-50 text-indigo-700 rounded text-xs">{r.request_type || 'unknown'}</span>
-                    </td>
-                    <td className="px-4 py-2 text-right font-mono">{r.latency_ms != null ? `${r.latency_ms.toFixed(0)} ms` : '—'}</td>
-                    <td className="px-4 py-2 text-right text-gray-400">{r.created_at ? new Date(r.created_at).toLocaleTimeString() : '—'}</td>
-                  </tr>
-                ))}
+                {data.recent.map((r, i) => {
+                  const lat = r.latency_ms
+                  const latStr = lat != null && lat > 0 ? `${Math.round(lat)} ms` : lat === 0 ? '< 1 ms' : '—'
+                  const latColor = lat > 1000 ? 'text-red-600' : lat > 500 ? 'text-yellow-600' : 'text-green-600'
+                  return (
+                    <tr key={i} className="hover:bg-gray-50">
+                      <td className="px-4 py-2 font-medium">
+                        <span className="text-gray-400 font-mono mr-1">{r.country_code || ''}</span>
+                        {r.country || '—'}
+                      </td>
+                      <td className="px-4 py-2 text-gray-500">{r.city || '—'}</td>
+                      <td className="px-4 py-2">
+                        <span className="px-1.5 py-0.5 bg-indigo-50 text-indigo-700 rounded">
+                          {r.request_type || 'unknown'}
+                        </span>
+                      </td>
+                      <td className={`px-4 py-2 text-right font-mono font-semibold ${latColor}`}>{latStr}</td>
+                      <td className="px-4 py-2 text-right text-gray-400">
+                        {r.created_at ? new Date(r.created_at).toLocaleString() : '—'}
+                      </td>
+                    </tr>
+                  )
+                })}
               </tbody>
             </table>
           </div>
