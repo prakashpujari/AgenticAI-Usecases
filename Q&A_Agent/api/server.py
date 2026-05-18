@@ -84,52 +84,66 @@ MIN_QUESTIONS   = 1
 
 # ── Geolocation helper ────────────────────────────────────────────────────────
 _geo_cache: dict[str, dict] = {}
+_geo_fail_count: dict[str, int] = {}   # track consecutive failures per IP
+_geo_executor = __import__("concurrent.futures", fromlist=["ThreadPoolExecutor"]).ThreadPoolExecutor(max_workers=4)
 
 def _geolocate(ip: str) -> dict:
     """Look up country/region for an IP via ip-api.com (free, cached in-process)."""
-    if not ip or ip in ("127.0.0.1", "::1"):
+    _empty = {"country": "", "country_code": "", "region": "", "city": ""}
+    if not ip or ip in ("127.0.0.1", "::1", ""):
         return {"country": "Local", "country_code": "LO", "region": "", "city": ""}
     if ip in _geo_cache:
         return _geo_cache[ip]
+    # Skip after 3 consecutive failures for this IP to avoid blocking threads
+    if _geo_fail_count.get(ip, 0) >= 3:
+        return _empty
     try:
         import urllib.request as _ur, json as _js
-        with _ur.urlopen(f"http://ip-api.com/json/{ip}?fields=country,countryCode,regionName,city,status",
-                         timeout=5) as r:
+        with _ur.urlopen(
+            f"http://ip-api.com/json/{ip}?fields=country,countryCode,regionName,city,status",
+            timeout=2,      # reduced from 5s to avoid thread starvation
+        ) as r:
             data = _js.loads(r.read())
         if data.get("status") == "success":
             result = {
-                "country": data.get("country", ""),
+                "country":      data.get("country", ""),
                 "country_code": data.get("countryCode", ""),
-                "region": data.get("regionName", ""),
-                "city": data.get("city", ""),
+                "region":       data.get("regionName", ""),
+                "city":         data.get("city", ""),
             }
             _geo_cache[ip] = result
+            _geo_fail_count.pop(ip, None)
             return result
     except Exception:
-        pass
-    return {"country": "", "country_code": "", "region": "", "city": ""}
+        _geo_fail_count[ip] = _geo_fail_count.get(ip, 0) + 1
+    return _empty
 
 
 def _log_access(request: "Request", endpoint: str, request_type: str,
                 latency_ms: float, status_code: int = 200) -> None:
-    """Fire-and-forget access log (runs in background thread)."""
+    """Fire-and-forget access log. Uses a bounded thread pool (max 4 workers)."""
+    ip = (request.headers.get("x-forwarded-for", "").split(",")[0].strip()
+          or request.headers.get("x-real-ip", "")
+          or str(getattr(request.client, "host", "")))
+    lms = round(latency_ms, 1)
+
     def _run():
-        ip = (request.headers.get("x-forwarded-for", "").split(",")[0].strip()
-              or request.headers.get("x-real-ip", "")
-              or str(getattr(request.client, "host", "")))
         geo = _geolocate(ip)
         save_access_log({
-            "ip": ip,
-            "country": geo["country"],
+            "ip":           ip,
+            "country":      geo["country"],
             "country_code": geo["country_code"],
-            "region": geo["region"],
-            "city": geo["city"],
+            "region":       geo["region"],
+            "city":         geo["city"],
             "request_type": request_type,
-            "endpoint": endpoint,
-            "latency_ms": round(latency_ms, 1),
-            "status_code": status_code,
+            "endpoint":     endpoint,
+            "latency_ms":   lms,
+            "status_code":  status_code,
         })
-    threading.Thread(target=_run, daemon=True).start()
+    try:
+        _geo_executor.submit(_run)
+    except Exception:
+        pass   # never block the request if the pool is saturated
 
 # ── FastAPI app ───────────────────────────────────────────────────────────────
 app = FastAPI(
@@ -151,7 +165,7 @@ app.add_middleware(
         "https://*.vercel.app",
     ],
     allow_credentials=False,
-    allow_methods=["GET", "POST"],
+    allow_methods=["GET", "POST", "DELETE"],
     allow_headers=["Authorization", "Content-Type", "X-Device-Fingerprint", "X-Request-Id"],
 )
 
@@ -584,6 +598,7 @@ async def submit_qa_job(
     output_mode: str = Form("questions"),
 ) -> SubmitJobResponse:
     """Upload a document and submit a Q&A generation job."""
+    t0         = time.monotonic()
     request_id = getattr(request.state, "request_id", str(uuid.uuid4()))
     identity   = extract_identity(request)
 
@@ -658,10 +673,8 @@ async def submit_qa_job(
 
     _job_queue.put(job)
 
-    # Log access in background
-    t_submit = time.monotonic()
     _log_access(request, "/api/qa/generate", output_mode,
-                (time.monotonic() - t_submit) * 1000)
+                (time.monotonic() - t0) * 1000)
 
     logger.info(
         "Job %s submitted (file: %s, mode: %s, queue: %d)",
@@ -739,6 +752,7 @@ async def submit_source_job(
     payload: SubmitSourceJobRequest,
 ) -> SubmitJobResponse:
     """Submit a URL or source string for ingestion (website / YouTube)."""
+    t0         = time.monotonic()
     request_id = getattr(request.state, "request_id", str(uuid.uuid4()))
     identity   = extract_identity(request)
 
@@ -798,7 +812,8 @@ async def submit_source_job(
         pipeline_id, source, payload.output_mode, _job_queue.qsize(),
         extra={"pipeline_id": pipeline_id, "request_id": request_id, "source": source},
     )
-    _log_access(request, "/api/qa/generate-source", payload.output_mode, 0)
+    _log_access(request, "/api/qa/generate-source", payload.output_mode,
+                (time.monotonic() - t0) * 1000)
 
     return SubmitJobResponse(
         pipeline_id=pipeline_id,
