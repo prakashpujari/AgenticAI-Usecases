@@ -137,24 +137,53 @@ CREATE TABLE IF NOT EXISTS qa_stage_timings (
 );
 
 CREATE TABLE IF NOT EXISTS qa_reviews (
-    review_id       TEXT        PRIMARY KEY,
-    rating          INTEGER     NOT NULL CHECK(rating BETWEEN 1 AND 5),
-    review_text     TEXT,
-    use_case        TEXT,
-    output_mode     TEXT,
-    job_id          TEXT,
-    identity        TEXT,
-    reviewer_name   TEXT,
-    created_at      TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-    sentiment       TEXT,
-    sentiment_score REAL
+    review_id        TEXT        PRIMARY KEY,
+    rating           INTEGER     NOT NULL CHECK(rating BETWEEN 1 AND 5),
+    review_text      TEXT,
+    use_case         TEXT,
+    output_mode      TEXT,
+    job_id           TEXT,
+    identity         TEXT,
+    reviewer_name    TEXT,
+    parent_review_id TEXT        REFERENCES qa_reviews(review_id) ON DELETE CASCADE,
+    created_at       TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    sentiment        TEXT,
+    sentiment_score  REAL
 );
 
-CREATE INDEX IF NOT EXISTS idx_qa_jobs_status     ON qa_jobs(status);
-CREATE INDEX IF NOT EXISTS idx_qa_jobs_created_at ON qa_jobs(created_at DESC);
-CREATE INDEX IF NOT EXISTS idx_stage_pipeline_id  ON qa_stage_timings(pipeline_id);
-CREATE INDEX IF NOT EXISTS idx_reviews_created_at ON qa_reviews(created_at DESC);
-CREATE INDEX IF NOT EXISTS idx_reviews_rating     ON qa_reviews(rating);
+CREATE TABLE IF NOT EXISTS uploaded_files (
+    file_id     TEXT        PRIMARY KEY,
+    filename    TEXT        NOT NULL,
+    file_path   TEXT,
+    pipeline_id TEXT,
+    size_bytes  BIGINT,
+    mime_type   TEXT,
+    created_at  TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+CREATE TABLE IF NOT EXISTS access_logs (
+    log_id       TEXT        PRIMARY KEY,
+    ip           TEXT,
+    country      TEXT,
+    country_code TEXT,
+    region       TEXT,
+    city         TEXT,
+    request_type TEXT,
+    endpoint     TEXT,
+    latency_ms   REAL,
+    status_code  INTEGER,
+    created_at   TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+CREATE INDEX IF NOT EXISTS idx_qa_jobs_status      ON qa_jobs(status);
+CREATE INDEX IF NOT EXISTS idx_qa_jobs_created_at  ON qa_jobs(created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_stage_pipeline_id   ON qa_stage_timings(pipeline_id);
+CREATE INDEX IF NOT EXISTS idx_reviews_created_at  ON qa_reviews(created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_reviews_rating      ON qa_reviews(rating);
+CREATE INDEX IF NOT EXISTS idx_reviews_parent      ON qa_reviews(parent_review_id);
+CREATE INDEX IF NOT EXISTS idx_files_pipeline      ON uploaded_files(pipeline_id);
+CREATE INDEX IF NOT EXISTS idx_access_logs_created ON access_logs(created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_access_logs_country ON access_logs(country_code);
 """
 
 
@@ -170,11 +199,13 @@ def init_db() -> None:
         with _pg_conn() as conn:
             with conn.cursor() as cur:
                 cur.execute(_SCHEMA_SQL)
-                # Migration: add reviewer_name to existing qa_reviews tables
-                cur.execute("""
-                    ALTER TABLE qa_reviews ADD COLUMN IF NOT EXISTS reviewer_name TEXT
-                """)
-        logger.info("PostgreSQL schema ready (qa_jobs, qa_stage_timings, qa_reviews)")
+                # Migrations for existing deployments
+                for migration in [
+                    "ALTER TABLE qa_reviews ADD COLUMN IF NOT EXISTS reviewer_name TEXT",
+                    "ALTER TABLE qa_reviews ADD COLUMN IF NOT EXISTS parent_review_id TEXT",
+                ]:
+                    cur.execute(migration)
+        logger.info("PostgreSQL schema ready (qa_jobs, qa_stage_timings, qa_reviews, uploaded_files, access_logs)")
     except Exception as exc:
         logger.error("Failed to init PostgreSQL schema: %s", exc)
         _init_sqlite()
@@ -221,26 +252,58 @@ def _init_sqlite() -> None:
         """)
         conn.execute("""
             CREATE TABLE IF NOT EXISTS qa_reviews (
-                review_id       TEXT PRIMARY KEY,
-                rating          INTEGER NOT NULL,
-                review_text     TEXT,
-                use_case        TEXT,
-                output_mode     TEXT,
-                job_id          TEXT,
-                identity        TEXT,
-                reviewer_name   TEXT,
-                created_at      TEXT NOT NULL,
-                sentiment       TEXT,
-                sentiment_score REAL
+                review_id        TEXT PRIMARY KEY,
+                rating           INTEGER NOT NULL,
+                review_text      TEXT,
+                use_case         TEXT,
+                output_mode      TEXT,
+                job_id           TEXT,
+                identity         TEXT,
+                reviewer_name    TEXT,
+                parent_review_id TEXT,
+                created_at       TEXT NOT NULL,
+                sentiment        TEXT,
+                sentiment_score  REAL
+            )
+        """)
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS uploaded_files (
+                file_id     TEXT PRIMARY KEY,
+                filename    TEXT NOT NULL,
+                file_path   TEXT,
+                pipeline_id TEXT,
+                size_bytes  INTEGER,
+                mime_type   TEXT,
+                created_at  TEXT NOT NULL
+            )
+        """)
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS access_logs (
+                log_id       TEXT PRIMARY KEY,
+                ip           TEXT,
+                country      TEXT,
+                country_code TEXT,
+                region       TEXT,
+                city         TEXT,
+                request_type TEXT,
+                endpoint     TEXT,
+                latency_ms   REAL,
+                status_code  INTEGER,
+                created_at   TEXT NOT NULL
             )
         """)
         conn.execute("CREATE INDEX IF NOT EXISTS idx_reviews_created_at ON qa_reviews(created_at DESC)")
         conn.execute("CREATE INDEX IF NOT EXISTS idx_reviews_rating ON qa_reviews(rating)")
-        # Migration: add reviewer_name to existing tables
-        try:
-            conn.execute("ALTER TABLE qa_reviews ADD COLUMN reviewer_name TEXT")
-        except Exception:
-            pass
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_access_logs_created ON access_logs(created_at DESC)")
+        # Migrations for existing tables
+        for col_sql in [
+            "ALTER TABLE qa_reviews ADD COLUMN reviewer_name TEXT",
+            "ALTER TABLE qa_reviews ADD COLUMN parent_review_id TEXT",
+        ]:
+            try:
+                conn.execute(col_sql)
+            except Exception:
+                pass
         conn.commit()
     logger.info("SQLite schema ready: %s", _SQLITE_PATH)
 
@@ -548,8 +611,8 @@ def save_review(review: dict[str, Any]) -> None:
         sql = """
             INSERT INTO qa_reviews
               (review_id, rating, review_text, use_case, output_mode,
-               job_id, identity, reviewer_name, created_at)
-            VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s)
+               job_id, identity, reviewer_name, parent_review_id, created_at)
+            VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
             ON CONFLICT (review_id) DO NOTHING
         """
         try:
@@ -557,13 +620,14 @@ def save_review(review: dict[str, Any]) -> None:
                 with conn.cursor() as cur:
                     cur.execute(sql, (
                         rid,
-                        int(review["rating"]),
+                        int(review.get("rating", 0) or 0),
                         review.get("review_text"),
                         review.get("use_case"),
                         review.get("output_mode"),
                         review.get("job_id"),
                         review.get("identity"),
                         review.get("reviewer_name"),
+                        review.get("parent_review_id"),
                         now,
                     ))
             return
@@ -574,17 +638,18 @@ def save_review(review: dict[str, Any]) -> None:
         conn.execute("""
             INSERT OR IGNORE INTO qa_reviews
               (review_id, rating, review_text, use_case, output_mode,
-               job_id, identity, reviewer_name, created_at)
-            VALUES (?,?,?,?,?,?,?,?,?)
+               job_id, identity, reviewer_name, parent_review_id, created_at)
+            VALUES (?,?,?,?,?,?,?,?,?,?)
         """, (
             rid,
-            int(review["rating"]),
+            int(review.get("rating", 0) or 0),
             review.get("review_text"),
             review.get("use_case"),
             review.get("output_mode"),
             review.get("job_id"),
             review.get("identity"),
             review.get("reviewer_name"),
+            review.get("parent_review_id"),
             now,
         ))
         conn.commit()
@@ -672,4 +737,287 @@ def get_review_stats() -> dict:
             "distribution": {5: int(r["five"] or 0), 4: int(r["four"] or 0),
                              3: int(r["three"] or 0), 2: int(r["two"] or 0),
                              1: int(r["one"] or 0)},
+        }
+
+
+def get_reviews_with_replies(limit: int = 20) -> list[dict]:
+    """Return top-level reviews with nested replies."""
+    # Fetch all reviews (top-level + replies) in one query
+    if _using_postgres:
+        try:
+            with _pg_conn() as conn:
+                with conn.cursor() as cur:
+                    cur.execute("""
+                        SELECT review_id, rating, review_text, use_case, output_mode,
+                               job_id, reviewer_name, parent_review_id, created_at,
+                               sentiment, sentiment_score
+                        FROM qa_reviews
+                        ORDER BY created_at ASC
+                        LIMIT %s
+                    """, (limit * 5,))  # fetch extra to include replies
+                    cols = [d[0] for d in cur.description]
+                    all_rows = [dict(zip(cols, r)) for r in cur.fetchall()]
+                    for r in all_rows:
+                        if hasattr(r.get("created_at"), "isoformat"):
+                            r["created_at"] = r["created_at"].isoformat()
+        except Exception as exc:
+            logger.warning("PG get_reviews_with_replies failed: %s", exc)
+            all_rows = []
+    else:
+        with _sqlite_lock, sqlite3.connect(str(_SQLITE_PATH)) as conn:
+            conn.row_factory = sqlite3.Row
+            all_rows = [dict(r) for r in conn.execute("""
+                SELECT review_id, rating, review_text, use_case, output_mode,
+                       job_id, reviewer_name, parent_review_id, created_at,
+                       sentiment, sentiment_score
+                FROM qa_reviews ORDER BY created_at ASC LIMIT ?
+            """, (limit * 5,)).fetchall()]
+
+    # Build threaded structure: top-level reviews with replies list
+    by_id = {r["review_id"]: {**r, "replies": []} for r in all_rows}
+    roots = []
+    for r in all_rows:
+        pid = r.get("parent_review_id")
+        if pid and pid in by_id:
+            by_id[pid]["replies"].append(by_id[r["review_id"]])
+        elif not pid:
+            roots.append(by_id[r["review_id"]])
+
+    # Return newest-first top-level reviews
+    roots.sort(key=lambda x: x.get("created_at", ""), reverse=True)
+    return roots[:limit]
+
+
+def save_review_reply(reply: dict[str, Any]) -> None:
+    """Save a reply to an existing review (parent_review_id set)."""
+    save_review(reply)  # reuse save_review — parent_review_id is stored
+
+
+# ── Uploaded Files ────────────────────────────────────────────────────────────
+
+def save_uploaded_file(file_data: dict[str, Any]) -> None:
+    """Track an uploaded file associated with a pipeline job."""
+    now = datetime.now(timezone.utc).isoformat()
+    fid = file_data["file_id"]
+
+    if _using_postgres:
+        try:
+            with _pg_conn() as conn:
+                with conn.cursor() as cur:
+                    cur.execute("""
+                        INSERT INTO uploaded_files
+                          (file_id, filename, file_path, pipeline_id, size_bytes, mime_type, created_at)
+                        VALUES (%s,%s,%s,%s,%s,%s,%s)
+                        ON CONFLICT (file_id) DO NOTHING
+                    """, (
+                        fid, file_data.get("filename"), file_data.get("file_path"),
+                        file_data.get("pipeline_id"), file_data.get("size_bytes"),
+                        file_data.get("mime_type"), now,
+                    ))
+            return
+        except Exception as exc:
+            logger.warning("PG save_uploaded_file failed: %s", exc)
+
+    with _sqlite_lock, sqlite3.connect(str(_SQLITE_PATH)) as conn:
+        conn.execute("""
+            INSERT OR IGNORE INTO uploaded_files
+              (file_id, filename, file_path, pipeline_id, size_bytes, mime_type, created_at)
+            VALUES (?,?,?,?,?,?,?)
+        """, (fid, file_data.get("filename"), file_data.get("file_path"),
+              file_data.get("pipeline_id"), file_data.get("size_bytes"),
+              file_data.get("mime_type"), now))
+        conn.commit()
+
+
+def get_uploaded_files(limit: int = 50) -> list[dict]:
+    """Return recently uploaded files, newest first."""
+    if _using_postgres:
+        try:
+            with _pg_conn() as conn:
+                with conn.cursor() as cur:
+                    cur.execute("""
+                        SELECT f.file_id, f.filename, f.file_path, f.pipeline_id,
+                               f.size_bytes, f.mime_type, f.created_at,
+                               j.status AS job_status, j.output_mode
+                        FROM uploaded_files f
+                        LEFT JOIN qa_jobs j ON j.pipeline_id = f.pipeline_id
+                        ORDER BY f.created_at DESC LIMIT %s
+                    """, (limit,))
+                    cols = [d[0] for d in cur.description]
+                    rows = [dict(zip(cols, r)) for r in cur.fetchall()]
+                    for r in rows:
+                        if hasattr(r.get("created_at"), "isoformat"):
+                            r["created_at"] = r["created_at"].isoformat()
+                    return rows
+        except Exception as exc:
+            logger.warning("PG get_uploaded_files failed: %s", exc)
+
+    with _sqlite_lock, sqlite3.connect(str(_SQLITE_PATH)) as conn:
+        conn.row_factory = sqlite3.Row
+        rows = conn.execute("""
+            SELECT f.file_id, f.filename, f.file_path, f.pipeline_id,
+                   f.size_bytes, f.mime_type, f.created_at,
+                   j.status AS job_status, j.output_mode
+            FROM uploaded_files f
+            LEFT JOIN qa_jobs j ON j.pipeline_id = f.pipeline_id
+            ORDER BY f.created_at DESC LIMIT ?
+        """, (limit,)).fetchall()
+        return [dict(r) for r in rows]
+
+
+def delete_uploaded_file(file_id: str) -> dict | None:
+    """Delete file record and return file_path so caller can remove from disk."""
+    if _using_postgres:
+        try:
+            with _pg_conn() as conn:
+                with conn.cursor() as cur:
+                    cur.execute(
+                        "DELETE FROM uploaded_files WHERE file_id=%s RETURNING file_path, pipeline_id",
+                        (file_id,)
+                    )
+                    row = cur.fetchone()
+                    return {"file_path": row[0], "pipeline_id": row[1]} if row else None
+        except Exception as exc:
+            logger.warning("PG delete_uploaded_file failed: %s", exc)
+
+    with _sqlite_lock, sqlite3.connect(str(_SQLITE_PATH)) as conn:
+        conn.row_factory = sqlite3.Row
+        row = conn.execute(
+            "SELECT file_path, pipeline_id FROM uploaded_files WHERE file_id=?", (file_id,)
+        ).fetchone()
+        if not row:
+            return None
+        conn.execute("DELETE FROM uploaded_files WHERE file_id=?", (file_id,))
+        conn.commit()
+        return dict(row)
+
+
+# ── Access Logs ───────────────────────────────────────────────────────────────
+
+def save_access_log(log: dict[str, Any]) -> None:
+    """Persist an access log entry (non-blocking — caller should use BackgroundTask)."""
+    now = datetime.now(timezone.utc).isoformat()
+    lid = log.get("log_id") or __import__("uuid").uuid4().hex
+
+    if _using_postgres:
+        try:
+            with _pg_conn() as conn:
+                with conn.cursor() as cur:
+                    cur.execute("""
+                        INSERT INTO access_logs
+                          (log_id, ip, country, country_code, region, city,
+                           request_type, endpoint, latency_ms, status_code, created_at)
+                        VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
+                        ON CONFLICT (log_id) DO NOTHING
+                    """, (
+                        lid, log.get("ip"), log.get("country"), log.get("country_code"),
+                        log.get("region"), log.get("city"), log.get("request_type"),
+                        log.get("endpoint"), log.get("latency_ms"), log.get("status_code"), now,
+                    ))
+            return
+        except Exception as exc:
+            logger.warning("PG save_access_log failed: %s", exc)
+
+    with _sqlite_lock, sqlite3.connect(str(_SQLITE_PATH)) as conn:
+        conn.execute("""
+            INSERT OR IGNORE INTO access_logs
+              (log_id, ip, country, country_code, region, city,
+               request_type, endpoint, latency_ms, status_code, created_at)
+            VALUES (?,?,?,?,?,?,?,?,?,?,?)
+        """, (lid, log.get("ip"), log.get("country"), log.get("country_code"),
+              log.get("region"), log.get("city"), log.get("request_type"),
+              log.get("endpoint"), log.get("latency_ms"), log.get("status_code"), now))
+        conn.commit()
+
+
+def get_analytics_stats() -> dict:
+    """Return aggregated analytics: country breakdown, latency trend, request types."""
+    if _using_postgres:
+        try:
+            with _pg_conn() as conn:
+                with conn.cursor() as cur:
+                    # Total requests
+                    cur.execute("SELECT COUNT(*) FROM access_logs")
+                    total = cur.fetchone()[0] or 0
+
+                    # By country
+                    cur.execute("""
+                        SELECT country_code, country, COUNT(*) AS cnt
+                        FROM access_logs
+                        WHERE country_code IS NOT NULL
+                        GROUP BY country_code, country
+                        ORDER BY cnt DESC LIMIT 50
+                    """)
+                    by_country = [
+                        {"country_code": r[0], "country": r[1], "count": r[2]}
+                        for r in cur.fetchall()
+                    ]
+
+                    # By request type
+                    cur.execute("""
+                        SELECT COALESCE(request_type,'unknown') AS rt, COUNT(*) AS cnt
+                        FROM access_logs GROUP BY rt ORDER BY cnt DESC
+                    """)
+                    by_type = [{"type": r[0], "count": r[1]} for r in cur.fetchall()]
+
+                    # Latency over last 24 h (hourly buckets)
+                    cur.execute("""
+                        SELECT
+                            date_trunc('hour', created_at) AS hour,
+                            ROUND(AVG(latency_ms)::numeric, 1) AS avg_ms,
+                            COUNT(*) AS requests
+                        FROM access_logs
+                        WHERE created_at > NOW() - INTERVAL '24 hours'
+                        GROUP BY hour ORDER BY hour
+                    """)
+                    latency_trend = [
+                        {"hour": str(r[0]), "avg_ms": float(r[1] or 0), "requests": r[2]}
+                        for r in cur.fetchall()
+                    ]
+
+                    # Recent accesses
+                    cur.execute("""
+                        SELECT ip, country, country_code, city, request_type,
+                               latency_ms, created_at
+                        FROM access_logs ORDER BY created_at DESC LIMIT 20
+                    """)
+                    cols = [d[0] for d in cur.description]
+                    recent = [dict(zip(cols, r)) for r in cur.fetchall()]
+                    for r in recent:
+                        if hasattr(r.get("created_at"), "isoformat"):
+                            r["created_at"] = r["created_at"].isoformat()
+
+                    return {
+                        "total_requests": total,
+                        "by_country":     by_country,
+                        "by_type":        by_type,
+                        "latency_trend":  latency_trend,
+                        "recent":         recent,
+                    }
+        except Exception as exc:
+            logger.warning("PG get_analytics_stats failed: %s", exc)
+
+    # SQLite fallback (simplified — no date_trunc)
+    with _sqlite_lock, sqlite3.connect(str(_SQLITE_PATH)) as conn:
+        conn.row_factory = sqlite3.Row
+        total = conn.execute("SELECT COUNT(*) FROM access_logs").fetchone()[0] or 0
+        by_country = [dict(r) for r in conn.execute("""
+            SELECT country_code, country, COUNT(*) AS cnt
+            FROM access_logs WHERE country_code IS NOT NULL
+            GROUP BY country_code, country ORDER BY cnt DESC LIMIT 50
+        """).fetchall()]
+        by_type = [dict(r) for r in conn.execute("""
+            SELECT COALESCE(request_type,'unknown') AS type, COUNT(*) AS count
+            FROM access_logs GROUP BY request_type ORDER BY count DESC
+        """).fetchall()]
+        recent = [dict(r) for r in conn.execute("""
+            SELECT ip, country, country_code, city, request_type, latency_ms, created_at
+            FROM access_logs ORDER BY created_at DESC LIMIT 20
+        """).fetchall()]
+        return {
+            "total_requests": total,
+            "by_country":     by_country,
+            "by_type":        by_type,
+            "latency_trend":  [],
+            "recent":         recent,
         }

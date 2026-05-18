@@ -3,7 +3,8 @@ import axios from 'axios'
 import RateLimitBanner from './RateLimitBanner'
 import { parseApiError, getDeviceFingerprint } from '../utils/errorHandler'
 
-const MAX_FILE_BYTES = 50 * 1024 * 1024 // 50 MB
+const MAX_FILE_BYTES = 25 * 1024 * 1024  // 25 MB — matches server-side limit
+const MAX_FILE_MB    = 25
 
 // ── YouTube helpers ────────────────────────────────────────────────────────
 function isYouTubeUrl(url) {
@@ -41,7 +42,7 @@ function validateFileClient(f) {
   if (!ALLOWED_EXTENSIONS.has(ext))
     return `Unsupported file type ".${ext}". Accepted: ${ACCEPTED_LABEL}`
   if (f.size > MAX_FILE_BYTES)
-    return `File is too large (${(f.size / 1024 / 1024).toFixed(1)} MB). Maximum is 50 MB.`
+    return `File too large (${(f.size / 1024 / 1024).toFixed(1)} MB). Maximum is ${MAX_FILE_MB} MB.`
   return null
 }
 
@@ -318,18 +319,8 @@ export default function DocumentUpload({ onJobSubmitted }) {
             />
             <label htmlFor="file-input" className="cursor-pointer">
               <div className="space-y-2">
-                <svg
-                  className="mx-auto h-12 w-12 text-gray-400"
-                  stroke="currentColor"
-                  fill="none"
-                  viewBox="0 0 48 48"
-                >
-                  <path
-                    d="M28 8H12a4 4 0 00-4 4v20a4 4 0 004 4h24a4 4 0 004-4V20"
-                    strokeWidth={2}
-                    strokeLinecap="round"
-                    strokeLinejoin="round"
-                  />
+                <svg className="mx-auto h-12 w-12 text-gray-400" stroke="currentColor" fill="none" viewBox="0 0 48 48">
+                  <path d="M28 8H12a4 4 0 00-4 4v20a4 4 0 004 4h24a4 4 0 004-4V20" strokeWidth={2} strokeLinecap="round" strokeLinejoin="round" />
                 </svg>
                 <div>
                   <p className="text-sm font-medium text-gray-900">
@@ -338,6 +329,10 @@ export default function DocumentUpload({ onJobSubmitted }) {
                   <p className="text-xs text-gray-500 mt-1">
                     PDF, text, doc, sheet, image, audio, or video
                   </p>
+                  {/* Max file size badge */}
+                  <span className="inline-block mt-2 px-2 py-0.5 bg-amber-50 border border-amber-200 text-amber-700 text-xs rounded-full font-medium">
+                    Max file size: {MAX_FILE_MB} MB
+                  </span>
                 </div>
               </div>
             </label>
@@ -364,18 +359,43 @@ export default function DocumentUpload({ onJobSubmitted }) {
         {/* Number of Questions — hidden when text-only mode */}
         {outputMode !== 'text' && (
           <div className="mt-6">
-            <label className="block text-sm font-medium text-gray-700 mb-2">
-              Number of Questions
-            </label>
-            <input
-              type="number"
-              min="1"
-              max="20"
+            <div className="flex items-center justify-between mb-2">
+              <label className="text-sm font-medium text-gray-700">
+                Number of Questions
+              </label>
+              <span className="text-xs text-indigo-600 font-semibold bg-indigo-50 px-2 py-0.5 rounded-full">
+                {numQuestions} selected
+              </span>
+            </div>
+            {/* Quick-pick buttons: 5, 10, 15, 20 */}
+            <div className="grid grid-cols-4 gap-2 mb-3">
+              {[5, 10, 15, 20].map(n => (
+                <button
+                  key={n}
+                  type="button"
+                  disabled={loading}
+                  onClick={() => setNumQuestions(n)}
+                  className={`py-1.5 text-sm rounded-md border font-medium transition ${
+                    numQuestions === n
+                      ? 'bg-indigo-600 text-white border-indigo-600'
+                      : 'bg-white text-gray-700 border-gray-300 hover:border-indigo-400'
+                  }`}
+                >
+                  {n}
+                </button>
+              ))}
+            </div>
+            {/* Fine-grained selector for 1–20 */}
+            <select
               value={numQuestions}
-              onChange={(e) => setNumQuestions(parseInt(e.target.value))}
+              onChange={e => setNumQuestions(parseInt(e.target.value))}
               disabled={loading}
-              className="w-full px-3 py-2 border border-gray-300 rounded-md shadow-sm focus:outline-none focus:ring-indigo-500 focus:border-indigo-500"
-            />
+              className="w-full px-3 py-2 border border-gray-300 rounded-md text-sm focus:outline-none focus:ring-2 focus:ring-indigo-400"
+            >
+              {Array.from({ length: 20 }, (_, i) => i + 1).map(n => (
+                <option key={n} value={n}>{n} question{n > 1 ? 's' : ''}</option>
+              ))}
+            </select>
           </div>
         )}
 

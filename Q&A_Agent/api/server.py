@@ -55,6 +55,9 @@ from api.database import (
     init_db, save_job, get_job, update_job,
     save_stage_timing, get_dashboard_stats, get_recent_jobs,
     save_review, get_reviews, get_review_stats,
+    get_reviews_with_replies,
+    save_uploaded_file, get_uploaded_files, delete_uploaded_file,
+    save_access_log, get_analytics_stats,
 )
 from api.cache import make_cache_key, get_cached, set_cached
 
@@ -74,6 +77,59 @@ API_VERSION     = "1.0.0"
 API_DIR         = Path(__file__).parent
 TEMP_UPLOAD_DIR = API_DIR / "uploads"
 TEMP_UPLOAD_DIR.mkdir(exist_ok=True)
+
+MAX_FILE_BYTES  = 25 * 1024 * 1024   # 25 MB hard limit (enforced server-side)
+MAX_QUESTIONS   = 20
+MIN_QUESTIONS   = 1
+
+# ── Geolocation helper ────────────────────────────────────────────────────────
+_geo_cache: dict[str, dict] = {}
+
+def _geolocate(ip: str) -> dict:
+    """Look up country/region for an IP via ip-api.com (free, cached in-process)."""
+    if not ip or ip in ("127.0.0.1", "::1"):
+        return {"country": "Local", "country_code": "LO", "region": "", "city": ""}
+    if ip in _geo_cache:
+        return _geo_cache[ip]
+    try:
+        import urllib.request as _ur, json as _js
+        with _ur.urlopen(f"http://ip-api.com/json/{ip}?fields=country,countryCode,regionName,city,status",
+                         timeout=5) as r:
+            data = _js.loads(r.read())
+        if data.get("status") == "success":
+            result = {
+                "country": data.get("country", ""),
+                "country_code": data.get("countryCode", ""),
+                "region": data.get("regionName", ""),
+                "city": data.get("city", ""),
+            }
+            _geo_cache[ip] = result
+            return result
+    except Exception:
+        pass
+    return {"country": "", "country_code": "", "region": "", "city": ""}
+
+
+def _log_access(request: "Request", endpoint: str, request_type: str,
+                latency_ms: float, status_code: int = 200) -> None:
+    """Fire-and-forget access log (runs in background thread)."""
+    def _run():
+        ip = (request.headers.get("x-forwarded-for", "").split(",")[0].strip()
+              or request.headers.get("x-real-ip", "")
+              or str(getattr(request.client, "host", "")))
+        geo = _geolocate(ip)
+        save_access_log({
+            "ip": ip,
+            "country": geo["country"],
+            "country_code": geo["country_code"],
+            "region": geo["region"],
+            "city": geo["city"],
+            "request_type": request_type,
+            "endpoint": endpoint,
+            "latency_ms": round(latency_ms, 1),
+            "status_code": status_code,
+        })
+    threading.Thread(target=_run, daemon=True).start()
 
 # ── FastAPI app ───────────────────────────────────────────────────────────────
 app = FastAPI(
@@ -541,9 +597,10 @@ async def submit_qa_job(
     waf_scan(file.filename or "", request_id=request_id)
     validate_file(file, request_id=request_id)
 
-    if num_questions < 1 or num_questions > 50:
+    if not (MIN_QUESTIONS <= num_questions <= MAX_QUESTIONS):
         api_error(400, E.INVALID_PARAM,
-                  "num_questions must be between 1 and 50.", request_id=request_id)
+                  f"Number of questions must be between {MIN_QUESTIONS} and {MAX_QUESTIONS}.",
+                  request_id=request_id)
 
     if output_mode not in ("text", "questions", "both"):
         api_error(400, E.INVALID_PARAM,
@@ -558,15 +615,22 @@ async def submit_qa_job(
     file_path   = TEMP_UPLOAD_DIR / f"{pipeline_id}_{file.filename}"
     try:
         contents = await file.read()
+        if len(contents) > MAX_FILE_BYTES:
+            api_error(400, E.INVALID_PARAM,
+                      f"File exceeds the {MAX_FILE_BYTES // (1024*1024)} MB size limit.",
+                      request_id=request_id)
         file_path.write_bytes(contents)
+    except HTTPException:
+        raise
     except Exception as exc:
         logger.error("Failed to save uploaded file: %s", exc,
                      extra={"request_id": request_id})
         api_error(500, E.PIPELINE_FAILED,
                   "Failed to process the uploaded file.", request_id=request_id)
 
+    pipeline_id_val = pipeline_id
     job = {
-        "pipeline_id":  pipeline_id,
+        "pipeline_id":  pipeline_id_val,
         "input_source": str(file_path),
         "num_questions": num_questions,
         "output_mode":  output_mode,
@@ -578,9 +642,26 @@ async def submit_qa_job(
     }
 
     with _jobs_lock:
-        _save_job(pipeline_id, job)
-    save_job(job)        # PostgreSQL (or SQLite fallback)
+        _save_job(pipeline_id_val, job)
+    save_job(job)
+
+    # Track uploaded file for the dashboard file manager
+    file_id = f"f_{pipeline_id_val}"
+    save_uploaded_file({
+        "file_id":    file_id,
+        "filename":   file.filename or "unknown",
+        "file_path":  str(file_path),
+        "pipeline_id": pipeline_id_val,
+        "size_bytes": len(contents),
+        "mime_type":  file.content_type or "",
+    })
+
     _job_queue.put(job)
+
+    # Log access in background
+    t_submit = time.monotonic()
+    _log_access(request, "/api/qa/generate", output_mode,
+                (time.monotonic() - t_submit) * 1000)
 
     logger.info(
         "Job %s submitted (file: %s, mode: %s, queue: %d)",
@@ -681,9 +762,10 @@ async def submit_source_job(
         else:
             validate_url(source, request_id=request_id)
 
-    if payload.num_questions < 1 or payload.num_questions > 50:
+    if not (MIN_QUESTIONS <= payload.num_questions <= MAX_QUESTIONS):
         api_error(400, E.INVALID_PARAM,
-                  "num_questions must be between 1 and 50.", request_id=request_id)
+                  f"Number of questions must be between {MIN_QUESTIONS} and {MAX_QUESTIONS}.",
+                  request_id=request_id)
 
     if payload.output_mode not in ("text", "questions", "both"):
         api_error(400, E.INVALID_PARAM,
@@ -716,6 +798,7 @@ async def submit_source_job(
         pipeline_id, source, payload.output_mode, _job_queue.qsize(),
         extra={"pipeline_id": pipeline_id, "request_id": request_id, "source": source},
     )
+    _log_access(request, "/api/qa/generate-source", payload.output_mode, 0)
 
     return SubmitJobResponse(
         pipeline_id=pipeline_id,
@@ -897,12 +980,13 @@ async def dashboard_stats(request: Request) -> DashboardStatsResponse:
 
 @app.get("/api/dashboard/jobs", tags=["Dashboard"])
 @limiter.limit("60/minute")
-async def dashboard_jobs(request: Request, limit: int = 50):
+async def dashboard_jobs(request: Request, limit: int = 3):
     """
     Most recent pipeline jobs for the dashboard table.
-    Returns up to `limit` rows ordered by creation time descending.
+    Default limit is 3 (last 3 jobs). Pass limit=0 to get all (max 200).
     """
-    jobs = get_recent_jobs(min(limit, 200))
+    effective_limit = 200 if limit == 0 else min(limit, 200)
+    jobs = get_recent_jobs(effective_limit)
     # Serialise datetime/Decimal objects that JSON can't handle
     for j in jobs:
         for k, v in j.items():
@@ -955,10 +1039,84 @@ async def submit_review(request: Request, body: ReviewRequest):
 @app.get("/api/dashboard/reviews", tags=["Reviews"])
 @limiter.limit("60/minute")
 async def dashboard_reviews(request: Request, limit: int = 20):
-    """Recent reviews + aggregate stats for the dashboard."""
-    reviews = get_reviews(min(limit, 100))
+    """Recent reviews (with nested replies) + aggregate stats."""
+    reviews = get_reviews_with_replies(min(limit, 100))
     stats   = get_review_stats()
     return {"reviews": reviews, "stats": stats}
+
+
+# ── Review Replies ────────────────────────────────────────────────────────────
+
+class ReplyRequest(BaseModel):
+    text:          str
+    reviewer_name: str = ""
+
+
+@app.post("/api/reviews/{review_id}/reply", tags=["Reviews"])
+@limiter.limit("10/minute")
+async def reply_to_review(request: Request, review_id: str, body: ReplyRequest):
+    """Post a reply to an existing review (threaded comments)."""
+    if not body.text.strip():
+        api_error(400, E.INVALID_PARAM, "Reply text is required.")
+    reply = {
+        "review_id":        str(uuid.uuid4()),
+        "rating":           0,           # replies have no star rating
+        "review_text":      body.text.strip()[:2000],
+        "reviewer_name":    body.reviewer_name.strip()[:80],
+        "parent_review_id": review_id,
+        "identity":         extract_identity(request),
+    }
+    from api.database import save_review_reply
+    save_review_reply(reply)
+    return {"status": "ok", "reply_id": reply["review_id"]}
+
+
+# ── File Management ───────────────────────────────────────────────────────────
+
+@app.get("/api/files", tags=["Files"])
+@limiter.limit("60/minute")
+async def list_files(request: Request, limit: int = 50):
+    """List uploaded files tracked in the database."""
+    files = get_uploaded_files(min(limit, 200))
+    for f in files:
+        if hasattr(f.get("created_at"), "isoformat"):
+            f["created_at"] = f["created_at"].isoformat()
+    return {"files": files}
+
+
+@app.delete("/api/files/{file_id}", tags=["Files"])
+@limiter.limit("20/minute")
+async def delete_file_endpoint(request: Request, file_id: str):
+    """Delete an uploaded file from storage and remove its DB record."""
+    record = delete_uploaded_file(file_id)
+    if not record:
+        raise HTTPException(status_code=404, detail="File not found")
+
+    # Remove from disk (best-effort)
+    fp = record.get("file_path")
+    if fp:
+        try:
+            Path(fp).unlink(missing_ok=True)
+            # Also remove generated outputs if pipeline_id known
+            pid = record.get("pipeline_id")
+            if pid:
+                for suffix in ("_qa.md", "_qa.pdf"):
+                    Path(str(config.OUTPUT_DIR / f"{pid}{suffix}")).unlink(missing_ok=True)
+        except Exception as exc:
+            logger.warning("Could not delete file from disk: %s", exc)
+
+    logger.info("File deleted: %s (pipeline=%s)", file_id, record.get("pipeline_id"))
+    return {"status": "ok", "file_id": file_id}
+
+
+# ── Analytics ─────────────────────────────────────────────────────────────────
+
+@app.get("/api/analytics", tags=["Analytics"])
+@limiter.limit("30/minute")
+async def analytics(request: Request):
+    """Return aggregated geographic + latency + request-type analytics."""
+    stats = get_analytics_stats()
+    return stats
 
 
 @app.get("/api/dashboard/cache-status", tags=["Dashboard"])
