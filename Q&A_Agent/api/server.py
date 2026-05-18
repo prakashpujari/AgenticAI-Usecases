@@ -1060,7 +1060,7 @@ async def reply_to_review(request: Request, review_id: str, body: ReplyRequest):
         api_error(400, E.INVALID_PARAM, "Reply text is required.")
     reply = {
         "review_id":        str(uuid.uuid4()),
-        "rating":           0,           # replies have no star rating
+        "rating":           None,        # replies have no star rating
         "review_text":      body.text.strip()[:2000],
         "reviewer_name":    body.reviewer_name.strip()[:80],
         "parent_review_id": review_id,

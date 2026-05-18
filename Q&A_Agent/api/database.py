@@ -138,14 +138,14 @@ CREATE TABLE IF NOT EXISTS qa_stage_timings (
 
 CREATE TABLE IF NOT EXISTS qa_reviews (
     review_id        TEXT        PRIMARY KEY,
-    rating           INTEGER     NOT NULL CHECK(rating BETWEEN 1 AND 5),
+    rating           INTEGER     CHECK(rating IS NULL OR rating BETWEEN 1 AND 5),
     review_text      TEXT,
     use_case         TEXT,
     output_mode      TEXT,
     job_id           TEXT,
     identity         TEXT,
     reviewer_name    TEXT,
-    parent_review_id TEXT        REFERENCES qa_reviews(review_id) ON DELETE CASCADE,
+    parent_review_id TEXT,
     created_at       TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     sentiment        TEXT,
     sentiment_score  REAL
@@ -180,11 +180,24 @@ CREATE INDEX IF NOT EXISTS idx_qa_jobs_created_at  ON qa_jobs(created_at DESC);
 CREATE INDEX IF NOT EXISTS idx_stage_pipeline_id   ON qa_stage_timings(pipeline_id);
 CREATE INDEX IF NOT EXISTS idx_reviews_created_at  ON qa_reviews(created_at DESC);
 CREATE INDEX IF NOT EXISTS idx_reviews_rating      ON qa_reviews(rating);
-CREATE INDEX IF NOT EXISTS idx_reviews_parent      ON qa_reviews(parent_review_id);
 CREATE INDEX IF NOT EXISTS idx_files_pipeline      ON uploaded_files(pipeline_id);
 CREATE INDEX IF NOT EXISTS idx_access_logs_created ON access_logs(created_at DESC);
 CREATE INDEX IF NOT EXISTS idx_access_logs_country ON access_logs(country_code);
 """
+
+# Migrations applied after _SCHEMA_SQL — each wrapped individually so one
+# failure cannot abort the others.  Ordered: columns first, then indexes that
+# depend on those columns.
+_MIGRATIONS_PG = [
+    "ALTER TABLE qa_reviews ADD COLUMN IF NOT EXISTS reviewer_name TEXT",
+    "ALTER TABLE qa_reviews ADD COLUMN IF NOT EXISTS parent_review_id TEXT",
+    # Index depends on the column above — must run after
+    "CREATE INDEX IF NOT EXISTS idx_reviews_parent ON qa_reviews(parent_review_id)",
+    # Allow NULL rating so reply rows (no rating) can be stored
+    "ALTER TABLE qa_reviews ALTER COLUMN rating DROP NOT NULL",
+    "ALTER TABLE qa_reviews DROP CONSTRAINT IF EXISTS qa_reviews_rating_check",
+    "ALTER TABLE qa_reviews ADD CONSTRAINT qa_reviews_rating_check CHECK (rating IS NULL OR rating BETWEEN 1 AND 5)",
+]
 
 
 def init_db() -> None:
@@ -199,16 +212,23 @@ def init_db() -> None:
         with _pg_conn() as conn:
             with conn.cursor() as cur:
                 cur.execute(_SCHEMA_SQL)
-                # Migrations for existing deployments
-                for migration in [
-                    "ALTER TABLE qa_reviews ADD COLUMN IF NOT EXISTS reviewer_name TEXT",
-                    "ALTER TABLE qa_reviews ADD COLUMN IF NOT EXISTS parent_review_id TEXT",
-                ]:
-                    cur.execute(migration)
-        logger.info("PostgreSQL schema ready (qa_jobs, qa_stage_timings, qa_reviews, uploaded_files, access_logs)")
+        logger.info("PostgreSQL base schema ready")
     except Exception as exc:
-        logger.error("Failed to init PostgreSQL schema: %s", exc)
+        logger.error("Failed to init PostgreSQL base schema: %s — falling back to SQLite", exc)
         _init_sqlite()
+        return
+
+    # Run each migration individually; log failures but never abort startup
+    for migration in _MIGRATIONS_PG:
+        try:
+            with _pg_conn() as conn:
+                with conn.cursor() as cur:
+                    cur.execute(migration)
+            logger.debug("Migration OK: %s", migration[:60])
+        except Exception as exc:
+            logger.warning("Migration skipped (already applied or error): %s | %s", migration[:60], exc)
+
+    logger.info("PostgreSQL schema ready (qa_jobs, qa_stage_timings, qa_reviews, uploaded_files, access_logs)")
 
 
 # ── SQLite fallback ───────────────────────────────────────────────────────────
@@ -253,7 +273,7 @@ def _init_sqlite() -> None:
         conn.execute("""
             CREATE TABLE IF NOT EXISTS qa_reviews (
                 review_id        TEXT PRIMARY KEY,
-                rating           INTEGER NOT NULL,
+                rating           INTEGER CHECK(rating IS NULL OR (rating BETWEEN 1 AND 5)),
                 review_text      TEXT,
                 use_case         TEXT,
                 output_mode      TEXT,
@@ -607,6 +627,10 @@ def save_review(review: dict[str, Any]) -> None:
     now = datetime.now(timezone.utc).isoformat()
     rid = review["review_id"]
 
+    # None rating is valid for reply rows (no star rating given)
+    raw_rating = review.get("rating")
+    rating_val = int(raw_rating) if raw_rating is not None else None
+
     if _using_postgres:
         sql = """
             INSERT INTO qa_reviews
@@ -620,7 +644,7 @@ def save_review(review: dict[str, Any]) -> None:
                 with conn.cursor() as cur:
                     cur.execute(sql, (
                         rid,
-                        int(review.get("rating", 0) or 0),
+                        rating_val,
                         review.get("review_text"),
                         review.get("use_case"),
                         review.get("output_mode"),
@@ -642,7 +666,7 @@ def save_review(review: dict[str, Any]) -> None:
             VALUES (?,?,?,?,?,?,?,?,?,?)
         """, (
             rid,
-            int(review.get("rating", 0) or 0),
+            rating_val,
             review.get("review_text"),
             review.get("use_case"),
             review.get("output_mode"),
@@ -703,6 +727,7 @@ def get_review_stats() -> dict:
                             COUNT(*) FILTER (WHERE rating=2) AS two,
                             COUNT(*) FILTER (WHERE rating=1) AS one
                         FROM qa_reviews
+                        WHERE parent_review_id IS NULL AND rating IS NOT NULL
                     """)
                     row = cur.fetchone()
                     cols = [d[0] for d in cur.description]
@@ -729,6 +754,7 @@ def get_review_stats() -> dict:
                 SUM(CASE WHEN rating=2 THEN 1 ELSE 0 END) AS two,
                 SUM(CASE WHEN rating=1 THEN 1 ELSE 0 END) AS one
             FROM qa_reviews
+            WHERE parent_review_id IS NULL AND rating IS NOT NULL
         """).fetchone()
         r = dict(row)
         return {
