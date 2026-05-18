@@ -659,9 +659,82 @@ def generate_questions(
     return validated
 
 
-# ─── Text summarisation ────────────────────────────────────────────────────────
+# ─── Large-document chunking constants ────────────────────────────────────────
+#
+# Groq free-tier TPM limits per model:
+#   llama-3.3-70b  : 6 000 TPM  (≈24K chars/call fits in 1-min window)
+#   llama-3.1-8b   : 20 000 TPM (≈80K chars/call)
+#   gemma2-9b-it   : 15 000 TPM, but only 8K token *context* (≈32K chars max per call)
+#   Gemini 2.5 Flash: 250 000 TPM, 1M token context (≈4M chars per call)
+#
+# Strategy:
+#   • Docs ≤ _SINGLE_PASS_CHARS  → one LLM call with full text
+#   • Docs >  _SINGLE_PASS_CHARS → map-reduce: split into _CHUNK_CHARS slices,
+#     sample up to _MAX_QA_CHUNKS / _MAX_SUM_CHUNKS representative chunks,
+#     run one LLM call per chunk, then synthesise.
+#
+# _CHUNK_CHARS is kept at 20 000 (≈5K tokens) so every Groq model including
+# gemma2-9b-it (8K context) can handle any single chunk without a context error.
 
-_SUMMARISE_SYSTEM = """You are a document analysis assistant. Analyse the provided document text and produce a well-structured summary with these sections:
+_CHUNK_CHARS     = 20_000   # max chars per LLM chunk call
+_CHUNK_OVERLAP   = 300      # overlap to preserve context across chunk boundaries
+_SINGLE_PASS_CHARS = 60_000 # docs ≤ this are sent in a single call (3× old limit)
+_MAX_QA_CHUNKS   = 20       # max sample chunks used for Q&A  generation
+_MAX_SUM_CHUNKS  = 30       # max chunks processed in summary map phase
+
+
+def _smart_truncate(text: str, max_chars: int) -> str:
+    """
+    Safety-net truncation: head 60% + tail 40%.
+    Used only as a last resort when the combined chunk summaries themselves
+    overflow a single synthesis call.
+    """
+    if len(text) <= max_chars:
+        return text
+    head = int(max_chars * 0.60)
+    tail = max_chars - head
+    return (
+        text[:head]
+        + "\n\n[... middle section omitted for length ...]\n\n"
+        + text[-tail:]
+    )
+
+
+def _split_into_chunks(text: str, chunk_size: int = _CHUNK_CHARS,
+                        overlap: int = _CHUNK_OVERLAP) -> list[str]:
+    """
+    Split text into overlapping chunks, preferring natural break points
+    (paragraph → newline → sentence → word boundary).
+    """
+    if len(text) <= chunk_size:
+        return [text]
+
+    chunks: list[str] = []
+    start = 0
+    total = len(text)
+
+    while start < total:
+        end = min(start + chunk_size, total)
+        if end < total:
+            search_from = start + (chunk_size * 3 // 4)
+            for sep in ("\n\n", "\n", ". ", "! ", "? ", " "):
+                p = text.rfind(sep, search_from, end)
+                if p != -1:
+                    end = p + len(sep)
+                    break
+        chunks.append(text[start:end].strip())
+        if end >= total:
+            break  # reached end of document — stop
+        start = max(end - overlap, start + 1)
+
+    return [c for c in chunks if c]
+
+
+# ─── Prompt templates ──────────────────────────────────────────────────────────
+
+_SUMMARISE_SYSTEM = """\
+You are a document analysis assistant. Analyse the provided document text and \
+produce a well-structured summary with these sections:
 
 ## Overview
 A 2–3 sentence description of what the document covers.
@@ -679,10 +752,40 @@ Format your response in clean Markdown. Be comprehensive but concise."""
 
 _SUMMARISE_HUMAN = "Analyse and structure the following document text:\n\n{text}"
 
+# Map phase — one short summary per chunk
+_CHUNK_SUM_SYSTEM = """\
+You are a document analysis assistant.
+Summarise the following section of a larger document in 4–6 sentences.
+Focus on key facts, arguments, concepts, and details specific to this section.
+Be specific and informative."""
 
-# ─── Direct text → questions (no vector store / embeddings needed) ─────────────
+_CHUNK_SUM_HUMAN = "[Section {n} of {total}]\n\n{text}"
 
-_QA_DIRECT_SYSTEM = """You are an expert educator who creates rigorous multiple-choice exam questions.
+# Reduce phase — synthesise all chunk summaries into a final structured summary
+_COMBINE_SUM_SYSTEM = """\
+You are a document synthesis expert.
+You have been given short summaries of all sections of a large document.
+Synthesise them into ONE comprehensive, well-structured document summary:
+
+## Overview
+2–3 sentences describing what the full document covers.
+
+## Key Topics
+Bullet list of all main topics covered across the document.
+
+## Key Facts & Details
+The most important facts, data points, and details drawn from across all sections.
+
+## Key Takeaways
+3–5 concise points a reader should remember.
+
+Format in clean Markdown. Be comprehensive but concise."""
+
+_COMBINE_SUM_HUMAN = "Section summaries to synthesise:\n\n{sections}"
+
+# Q&A generation
+_QA_DIRECT_SYSTEM = """\
+You are an expert educator who creates rigorous multiple-choice exam questions.
 
 Given the document text below, generate exactly {num_questions} multiple-choice question(s).
 
@@ -698,126 +801,227 @@ Return ONLY a valid JSON array. Each element must follow this exact schema:
 Rules:
 - Questions must be answerable from the provided text
 - Each question must have exactly 4 choices (A-D) with exactly one correct answer
-- Vary difficulty across the question set
+- Vary difficulty: include recall, comprehension, and analysis questions
 - Do not add any text outside the JSON array"""
 
 _QA_DIRECT_HUMAN = "Document text:\n\n{text}\n\nGenerate {num_questions} MCQ question(s)."
 
 
+# ─── Internal helpers ──────────────────────────────────────────────────────────
+
+def _parse_qa_response(raw: str) -> list[QuestionDict]:
+    """Extract and parse JSON array from raw LLM output."""
+    m = re.search(r"\[.*\]", raw.strip(), re.DOTALL)
+    if not m:
+        raise ValueError(f"LLM did not return a JSON array. Raw (first 500 chars):\n{raw[:500]}")
+    return json.loads(m.group(0))
+
+
+def _normalise_questions(raw_list: list, limit: int) -> list[QuestionDict]:
+    """Normalise and re-number question dicts, trimming to at most `limit`."""
+    result: list[QuestionDict] = []
+    for i, q in enumerate(raw_list[:limit], start=1):
+        result.append({
+            "question_number": i,
+            "question":        str(q.get("question", "")),
+            "choices":         q.get("choices", {}),
+            "correct_answer":  str(q.get("correct_answer", "A")),
+            "explanation":     str(q.get("explanation", "")),
+        })
+    return result
+
+
+# ─── Q&A generation ────────────────────────────────────────────────────────────
+
 @traceable(name="generate_questions_from_text", run_type="llm", tags=["generation", "llm"])
-def _smart_truncate(text: str, max_chars: int) -> str:
-    """
-    Truncate long text while preserving coverage across the whole document.
-
-    Strategy: take 60% from the start (intro/definitions usually most dense)
-    + 40% from the end (conclusions/summaries).  This is far better than
-    head-only truncation for multi-chapter documents.
-    """
-    if len(text) <= max_chars:
-        return text
-    head = int(max_chars * 0.60)
-    tail = max_chars - head
-    return (
-        text[:head]
-        + "\n\n[... middle section omitted for length ...]\n\n"
-        + text[-tail:]
-    )
-
-
-# ── Context window budget per model (conservative, leaves room for prompt + output)
-# Groq free-tier TPM limits: llama-3.3-70b=6K, llama-3.1-8b=20K, gemma2-9b=15K
-# We budget ~8K tokens of input → ~32K chars (covers ~30-page documents fully)
-_MAX_CONTEXT_CHARS = 32_000
-
-
 def generate_questions_from_text(
     text: str,
     num_questions: int | None = None,
     request_id: str = "unknown",
 ) -> list[QuestionDict]:
     """
-    Generate MCQ questions directly from raw text.
+    Generate MCQ questions directly from raw document text — no RAG needed.
 
-    No embeddings, no vector store, no retrieval step needed.
-    The full document text (up to 32K chars ≈ 8K tokens) is passed directly
-    to the LLM so it can generate questions about ANY topic in the document.
+    Small documents (≤ 60 000 chars, ~30 pages):
+        Single LLM call with the full text.
 
-    32K chars covers:
-      • ~30-page PDF / Word doc (most upload cases)
-      • Any Wikipedia article
-      • Any audio/video transcript under ~45 min
-    For longer documents, _smart_truncate takes head + tail to preserve coverage.
+    Large documents (> 60 000 chars, up to 1 000+ pages):
+        Map-reduce: split into 20 000-char chunks, sample up to
+        _MAX_QA_CHUNKS evenly across the full document, generate
+        questions per chunk, then merge and renumber.
+
+    This ensures every part of the document — beginning, middle, and end —
+    contributes questions rather than only the opening pages.
     """
     if not config.GROQ_API_KEY:
         raise EnvironmentError("GROQ_API_KEY is not set.")
 
     num_questions = num_questions or config.NUM_QUESTIONS
-    text = _smart_truncate(text, _MAX_CONTEXT_CHARS)
 
-    from langchain_core.prompts import ChatPromptTemplate  # lazy
+    from langchain_core.prompts import ChatPromptTemplate
     prompt = ChatPromptTemplate.from_messages([
         ("system", _QA_DIRECT_SYSTEM),
         ("human",  _QA_DIRECT_HUMAN),
     ])
 
-    result = call_llm_with_retry(
-        chain_input={"text": text, "num_questions": num_questions},
-        prompt=prompt,
-        request_id=request_id,
+    # ── Small document: single pass ────────────────────────────────────────────
+    if len(text) <= _SINGLE_PASS_CHARS:
+        result = call_llm_with_retry(
+            chain_input={"text": text, "num_questions": num_questions},
+            prompt=prompt,
+            request_id=request_id,
+        )
+        questions = _normalise_questions(_parse_qa_response(result.content), num_questions)
+        logger.info(
+            "Q&A single-pass: %d questions via %s (%.0f ms, %d chars in)",
+            len(questions), result.model, result.total_latency_ms, len(text),
+        )
+        return questions
+
+    # ── Large document: map-reduce over sampled chunks ─────────────────────────
+    chunks = _split_into_chunks(text, _CHUNK_CHARS, _CHUNK_OVERLAP)
+    total_chunks = len(chunks)
+
+    # Evenly sample across the full document so every section is represented
+    n_sample = min(total_chunks, _MAX_QA_CHUNKS)
+    indices = (
+        [int(i * total_chunks / n_sample) for i in range(n_sample)]
+        if total_chunks > n_sample else list(range(total_chunks))
     )
+    selected = [(idx, chunks[idx]) for idx in indices]
 
-    # Parse + validate JSON
-    raw = result.content.strip()
-    json_match = re.search(r"\[.*\]", raw, re.DOTALL)
-    if not json_match:
-        raise ValueError(f"LLM did not return a JSON array. Raw:\n{raw[:500]}")
-    questions: list[QuestionDict] = json.loads(json_match.group(0))
-
-    validated: list[QuestionDict] = []
-    for i, q in enumerate(questions, start=1):
-        validated.append({
-            "question_number": q.get("question_number", i),
-            "question":        str(q.get("question", "")),
-            "choices":         q.get("choices", {}),
-            "correct_answer":  str(q.get("correct_answer", "A")),
-            "explanation":     str(q.get("explanation", "")),
-        })
+    # Questions per chunk — ceiling so we get at least num_questions total
+    qs_per_chunk = max(1, (num_questions + len(selected) - 1) // len(selected))
 
     logger.info(
-        "generate_questions_from_text: %d questions via %s (%d attempts, %.0f ms)",
-        len(validated), result.model, result.attempts, result.total_latency_ms,
+        "Q&A map-reduce: %d chars / %d total chunks → sampling %d chunks "
+        "(%d q/chunk, %d requested)",
+        len(text), total_chunks, len(selected), qs_per_chunk, num_questions,
     )
-    return validated
 
+    all_raw: list[QuestionDict] = []
+    for seq, (chunk_idx, chunk) in enumerate(selected):
+        try:
+            res = call_llm_with_retry(
+                chain_input={"text": chunk, "num_questions": qs_per_chunk},
+                prompt=prompt,
+                request_id=f"{request_id}-c{chunk_idx}",
+            )
+            chunk_qs = _parse_qa_response(res.content)
+            all_raw.extend(chunk_qs)
+            logger.info(
+                "Q&A chunk %d/%d (doc-chunk %d): %d questions via %s",
+                seq + 1, len(selected), chunk_idx, len(chunk_qs), res.model,
+            )
+        except Exception as exc:
+            logger.warning("Q&A chunk %d/%d failed: %s", seq + 1, len(selected), exc)
+
+        if seq < len(selected) - 1:
+            time.sleep(1.5)   # breathing room for Groq TPM limits
+
+    questions = _normalise_questions(all_raw, num_questions)
+    logger.info(
+        "Q&A map-reduce complete: %d/%d questions from %d sampled chunks "
+        "(%d total doc chunks, %d chars)",
+        len(questions), num_questions, len(selected), total_chunks, len(text),
+    )
+    return questions
+
+
+# ─── Text summarisation ────────────────────────────────────────────────────────
 
 @traceable(name="summarize_text", run_type="llm", tags=["generation", "llm"])
 def summarize_text(text: str, request_id: str = "unknown") -> str:
-    """Use the LLM to produce a structured Markdown summary of extracted document text."""
+    """
+    Produce a structured Markdown summary of any document.
+
+    Small documents (≤ 60 000 chars, ~30 pages):
+        Single LLM call with full text.
+
+    Large documents (> 60 000 chars, up to 1 000+ pages):
+        Map phase  — one short paragraph summary per chunk (up to 30 chunks,
+                     sampled evenly if the document has more).
+        Reduce phase — synthesise all chunk summaries into one final
+                       structured summary (Overview / Key Topics /
+                       Key Facts / Key Takeaways).
+    """
     if not config.GROQ_API_KEY:
-        raise EnvironmentError(
-            "GROQ_API_KEY is not set. Add it to a .env file at the project root."
+        raise EnvironmentError("GROQ_API_KEY is not set.")
+
+    from langchain_core.prompts import ChatPromptTemplate
+
+    # ── Small document: single pass ────────────────────────────────────────────
+    if len(text) <= _SINGLE_PASS_CHARS:
+        prompt = ChatPromptTemplate.from_messages([
+            ("system", _SUMMARISE_SYSTEM),
+            ("human",  _SUMMARISE_HUMAN),
+        ])
+        result = call_llm_with_retry(
+            chain_input={"text": text},
+            prompt=prompt,
+            request_id=request_id,
         )
+        logger.info(
+            "Summary single-pass: %d chars in → %d chars out (provider=%s)",
+            len(text), len(result.content), result.provider,
+        )
+        return result.content
 
-    max_chars = 8_000
-    if len(text) > max_chars:
-        text = text[:max_chars] + "\n\n[… document truncated for analysis …]"
+    # ── Large document: map-reduce ─────────────────────────────────────────────
+    chunks = _split_into_chunks(text, _CHUNK_CHARS, _CHUNK_OVERLAP)
+    total_chunks = len(chunks)
 
-    from langchain_core.prompts import ChatPromptTemplate  # lazy
-    prompt = ChatPromptTemplate.from_messages([
-        ("system", _SUMMARISE_SYSTEM),
-        ("human",  _SUMMARISE_HUMAN),
-    ])
-    result = call_llm_with_retry(
-        chain_input={"text": text},
-        prompt=prompt,
-        request_id=request_id,
+    # Sample evenly if there are more chunks than the cap
+    if total_chunks > _MAX_SUM_CHUNKS:
+        step = total_chunks / _MAX_SUM_CHUNKS
+        chunks = [chunks[int(i * step)] for i in range(_MAX_SUM_CHUNKS)]
+
+    n = len(chunks)
+    logger.info(
+        "Summary map-reduce: %d chars / %d total chunks → processing %d chunks",
+        len(text), total_chunks, n,
     )
-    summary = result.content
+
+    # Map phase: short summary of each chunk
+    chunk_prompt = ChatPromptTemplate.from_messages([
+        ("system", _CHUNK_SUM_SYSTEM),
+        ("human",  _CHUNK_SUM_HUMAN),
+    ])
+    chunk_summaries: list[str] = []
+    for i, chunk in enumerate(chunks):
+        try:
+            res = call_llm_with_retry(
+                chain_input={"text": chunk, "n": i + 1, "total": n},
+                prompt=chunk_prompt,
+                request_id=f"{request_id}-s{i}",
+            )
+            chunk_summaries.append(f"**Section {i + 1}/{n}:**\n{res.content.strip()}")
+            logger.info("Summary chunk %d/%d complete via %s", i + 1, n, res.model)
+        except Exception as exc:
+            logger.warning("Summary chunk %d/%d failed: %s", i + 1, n, exc)
+            chunk_summaries.append(f"**Section {i + 1}/{n}:** [section unavailable]")
+
+        if i < n - 1:
+            time.sleep(1.0)   # respect Groq TPM limits
+
+    # Reduce phase: synthesise chunk summaries into final structured summary
+    combined = "\n\n".join(chunk_summaries)
+    # Safety net: if combined summaries themselves overflow a single call, truncate
+    if len(combined) > _SINGLE_PASS_CHARS:
+        combined = _smart_truncate(combined, _SINGLE_PASS_CHARS)
+
+    combine_prompt = ChatPromptTemplate.from_messages([
+        ("system", _COMBINE_SUM_SYSTEM),
+        ("human",  _COMBINE_SUM_HUMAN),
+    ])
+    final = call_llm_with_retry(
+        chain_input={"sections": combined},
+        prompt=combine_prompt,
+        request_id=f"{request_id}-s-combine",
+    )
 
     logger.info(
-        "Text summarised — %d chars in, %d chars out (provider=%s, attempts=%d)",
-        len(text), len(summary), result.provider, result.attempts,
-        extra={"input_len": len(text), "summary_len": len(summary),
-               "provider": result.provider, "attempts": result.attempts},
+        "Summary map-reduce complete: %d chunks → %d chars final summary (provider=%s)",
+        n, len(final.content), final.provider,
     )
-    return summary
+    return final.content

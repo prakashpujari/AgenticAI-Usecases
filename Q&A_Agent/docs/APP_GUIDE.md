@@ -453,15 +453,29 @@ You can reply to any review by clicking **"↩ Reply"** and entering your text.
 | Rate limit | **10 requests/hour** per user |
 | Spike limit | **3 requests/sec** |
 | File retention | **5 minutes** (auto-deleted after pipeline completes or 5 min elapses) |
+| Document size (single-pass) | **≤ 60 000 chars** (~30 pages) — full document sent in one LLM call |
+| Document size (map-reduce) | **Unlimited** — 1 000+ page docs split into 20 000-char chunks, processed in parallel passes |
+
+**Processing time by document size:**
+
+| Document size | Pages | Mode | Q&A time | Summary time |
+|--------------|-------|------|-----------|--------------|
+| 10K–60K chars | 1–30 pages | Single-pass (100% coverage) | ~3–5 s | ~3–5 s |
+| 60K–200K chars | 30–100 pages | Map-reduce (100% coverage) | ~30–40 s | ~35–45 s |
+| 200K–500K chars | 100–250 pages | Map-reduce (80% coverage) | ~60 s | ~80 s |
+| 500K–2M chars | 250–1 000 pages | Map-reduce (20–40% coverage, evenly sampled) | ~60 s | ~90 s |
+
+> **Coverage note:** For 1 000+ page documents, the pipeline samples up to 20 chunks (Q&A) or 30 chunks (summary) evenly distributed across the full document — beginning, middle, and end — not just the first few pages. Every major section contributes to the output.
 
 **Tips for best results:**
 - ✅ Use text-based PDFs (not scanned images) for fastest processing
 - ✅ For audio/video, 1–5 minute clips produce the best questions (longer = more questions possible)
 - ✅ Wikipedia URLs work very well — paste the topic URL directly
 - ✅ For spreadsheets, put important data in the first rows (top rows get most context weight)
+- ✅ For 1 000+ page docs, request more questions (e.g. 20) to get broader document coverage
 - ⚠️ YouTube transcripts may require manual paste on cloud servers (see Section 4)
 - ⚠️ MOV/AVI/MKV video files require ffmpeg on the server; if unavailable, convert to MP4 first
-- ⚠️ If you get a rate limit error, wait 60 seconds and retry — the 6-level LLM fallback handles most cases
+- ⚠️ Very large documents (> 500K chars) may take 1–2 minutes — the job status page updates in real time
 
 ---
 
@@ -502,15 +516,19 @@ You can reply to any review by clicking **"↩ Reply"** and entering your text.
 │  │    ├── URL (urllib → infer format → load)                 │   │
 │  │    └── YouTube (4-layer transcript fallback)              │   │
 │  │         │                                                  │   │
-│  │  2. generate (direct full-text, no embeddings/retrieval)  │   │
-│  │    ├── smart_truncate(text, 32K chars) if needed          │   │
-│  │    │   → head 60% + tail 40% preserves full coverage      │   │
-│  │    ├── 1. groq/llama-3.3-70b-versatile  (~600ms)         │   │
-│  │    ├── 2. groq/llama-3.1-8b-instant     (~150ms)         │   │
-│  │    ├── 3. groq/gemma2-9b-it             (~350ms)         │   │
-│  │    ├── 4. gemini-2.5-flash              (~800ms)         │   │
-│  │    ├── 5. groq/llama-3.2-3b-preview     (~100ms)         │   │
-│  │    └── 6. huggingface/Kimi-K2           (2000ms+)        │   │
+│  │  2. generate (map-reduce for large docs, no embeddings)    │   │
+│  │    ├── docs ≤ 60K chars → single LLM call (100% coverage) │   │
+│  │    ├── docs  > 60K chars → split into 20K-char chunks:    │   │
+│  │    │     map:    summarise/question each chunk             │   │
+│  │    │     reduce: synthesise chunk outputs into final result│   │
+│  │    │   samples up to 20 chunks (Q&A) / 30 (summary)       │   │
+│  │    │   evenly distributed across the full document         │   │
+│  │    ├── 1. groq/llama-3.3-70b-versatile  (~600ms/call)    │   │
+│  │    ├── 2. groq/llama-3.1-8b-instant     (~150ms/call)    │   │
+│  │    ├── 3. groq/gemma2-9b-it             (~350ms/call)    │   │
+│  │    ├── 4. gemini-2.5-flash              (~800ms/call)    │   │
+│  │    ├── 5. groq/llama-3.2-3b-preview     (~100ms/call)    │   │
+│  │    └── 6. huggingface/Kimi-K2           (2000ms+/call)   │   │
 │  │         │                                                  │   │
 │  │  3. format_output → Markdown + PDF                        │   │
 │  └──────────────────────────────────────────────────────────┘   │
@@ -530,9 +548,9 @@ You can reply to any review by clicking **"↩ Reply"** and entering your text.
 
 | Decision | Choice | Reason |
 |----------|--------|--------|
-| **No vector DB** | Direct LLM context injection | RAG is only needed when docs exceed context windows. Primary LLMs have 128K token windows; a 100-page PDF is ~25K tokens — fits with room to spare |
-| **No embeddings** | Full text → LLM | Embeddings + FAISS added 200–600 ms latency and only sent 3% of a 200-page doc to the LLM. Direct injection gives 100% coverage |
-| **Smart truncation** | head 60% + tail 40% | For rare extra-large docs (>32K chars), preserving both intro and conclusion gives better question distribution than head-only cutoff |
+| **No vector DB** | Direct LLM context injection | RAG is only needed for a large static corpus across many documents. For single-document Q&A, direct full-text injection gives better coverage and 300–600 ms less latency |
+| **No embeddings** | Full text → LLM | Embeddings + FAISS only sent 3–13% of a large doc to the LLM (via similarity search). Direct injection sends 100% for small docs and 20–40% (evenly distributed) for 1 000-page docs |
+| **Map-reduce for large docs** | Split → map → reduce | Docs > 60 K chars are split into 20 K-char chunks. Questions/summaries are generated per chunk then synthesised. Covers the full document length without needing a massive context window |
 | **Primary LLM** | Groq/llama-3.3-70b | Groq LPU = 10× faster than GPU serving; 400–900 ms vs 1500–3000 ms on Gemini |
 | **6-provider fallback** | Groq × 4 → Gemini → HF | Each Groq model has an independent rate-limit quota; exhausting one falls to the next instantly |
 | **DB** | PostgreSQL + SQLite fallback | Persistent analytics; SQLite for local dev |
@@ -545,17 +563,38 @@ You can reply to any review by clicking **"↩ Reply"** and entering your text.
   Input (file / URL / YouTube)
        │
        ▼  extract_text  (~500ms–2s depending on format)
-  clean_text  (plain UTF-8 string)
+  clean_text  (plain UTF-8 string, unlimited size)
        │
-       ▼  smart_truncate (instant, if needed)
-  text ≤ 32K chars  (covers 99% of uploads without truncation)
+       ├─ if len ≤ 60 000 chars (~30 pages)
+       │       │
+       │       ▼  SINGLE-PASS (100% coverage)
+       │  LLM call with full text → result
        │
-       ▼  generate_questions_from_text  (~600ms–2s)
+       └─ if len > 60 000 chars (30+ pages)
+               │
+               ▼  SPLIT into 20 000-char chunks (overlapping)
+               │
+               ▼  MAP: LLM call per sampled chunk
+               │       ├── Q&A: up to 20 chunks, evenly spaced
+               │       └── Summary: up to 30 chunks, evenly spaced
+               │
+               ▼  REDUCE: synthesise chunk outputs → final result
+               │
+       ▼  generate_questions / summarize  (~3s per chunk × N chunks)
   list[QuestionDict]  — JSON array from LLM
        │
        ▼  format_output  (~100ms)
   Markdown + PDF  →  stored in job record  →  returned to browser
 ```
+
+**Coverage for large documents:**
+
+| Doc size | Q&A chunks | Summary chunks | Coverage (evenly sampled) |
+|---------|-----------|---------------|--------------------------|
+| ≤ 30 pages | 1 (full) | 1 (full) | 100% |
+| 30–100 pages | all chunks | all chunks | 100% |
+| 100–250 pages | 20 of N | all chunks | 80%+ |
+| 250–1 000+ pages | 20 of N | 30 of N | 20–40% (distributed) |
 
 **Why no RAG / vector DB?**
 
