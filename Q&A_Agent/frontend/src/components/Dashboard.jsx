@@ -777,18 +777,57 @@ function AnalyticsSection() {
   )
 }
 
+// ── TTL countdown badge ────────────────────────────────────────────────────────
+
+function TtlBadge({ ttlSeconds }) {
+  const [remaining, setRemaining] = useState(ttlSeconds)
+
+  useEffect(() => {
+    setRemaining(ttlSeconds)
+    if (ttlSeconds <= 0) return
+    const id = setInterval(() => setRemaining(s => Math.max(0, s - 1)), 1000)
+    return () => clearInterval(id)
+  }, [ttlSeconds])
+
+  if (remaining <= 0)
+    return <span className="text-xs px-1.5 py-0.5 rounded bg-red-100 text-red-600 font-medium">expired</span>
+
+  const mins = Math.floor(remaining / 60)
+  const secs = remaining % 60
+  const label = mins > 0 ? `${mins}m ${secs}s` : `${secs}s`
+  const urgent = remaining < 60
+
+  return (
+    <span className={`text-xs px-1.5 py-0.5 rounded font-mono font-medium ${
+      urgent ? 'bg-orange-100 text-orange-700 animate-pulse' : 'bg-amber-50 text-amber-700'
+    }`}>
+      {label}
+    </span>
+  )
+}
+
 // ── Files Section ─────────────────────────────────────────────────────────────
 
 function FilesSection({ onDeleted }) {
   const [files, setFiles]         = useState([])
-  const [confirm, setConfirm]     = useState(null)  // file to confirm-delete
+  const [expiry, setExpiry]       = useState(300)   // seconds from API
+  const [confirm, setConfirm]     = useState(null)
   const [deleting, setDeleting]   = useState(null)
 
   const load = useCallback(async () => {
-    try { const r = await axios.get('/api/files?limit=20'); setFiles(r.data.files || []) } catch {}
+    try {
+      const r = await axios.get('/api/files?limit=50')
+      setFiles(r.data.files || [])
+      if (r.data.expiry_seconds) setExpiry(r.data.expiry_seconds)
+    } catch {}
   }, [])
 
-  useEffect(() => { load() }, [load])
+  // Refresh every 30 s so TTL badges stay roughly accurate
+  useEffect(() => {
+    load()
+    const id = setInterval(load, 30_000)
+    return () => clearInterval(id)
+  }, [load])
 
   const handleDelete = async (fileId) => {
     setDeleting(fileId); setConfirm(null)
@@ -800,9 +839,14 @@ function FilesSection({ onDeleted }) {
     finally { setDeleting(null) }
   }
 
+  const expiryMins = Math.round(expiry / 60)
+
   if (files.length === 0) return (
-    <div className="bg-white rounded-xl border border-gray-200 p-6 text-center text-gray-400 text-sm">
-      No uploaded files yet
+    <div className="bg-white rounded-xl border border-gray-200 p-8 text-center space-y-2">
+      <p className="text-gray-400 text-sm">No uploaded files yet</p>
+      <p className="text-xs text-gray-300">
+        Files are automatically deleted {expiryMins} minute{expiryMins !== 1 ? 's' : ''} after upload.
+      </p>
     </div>
   )
 
@@ -810,40 +854,81 @@ function FilesSection({ onDeleted }) {
     <>
       {confirm && (
         <ConfirmModal
-          message={`Delete "${confirm.filename}"? This will also remove the generated output.`}
+          message={`Delete "${confirm.filename}"? This cannot be undone.`}
           onConfirm={() => handleDelete(confirm.file_id)}
           onCancel={() => setConfirm(null)}
         />
       )}
       <div className="bg-white rounded-xl border border-gray-200 overflow-hidden">
+        {/* Header */}
         <div className="px-5 py-4 border-b border-gray-100 flex items-center justify-between">
-          <h3 className="text-sm font-semibold text-gray-700">Uploaded Files</h3>
+          <div>
+            <h3 className="text-sm font-semibold text-gray-700">Uploaded Files</h3>
+            <p className="text-xs text-gray-400 mt-0.5">
+              Auto-deleted {expiryMins} min after upload · or delete manually below
+            </p>
+          </div>
           <span className="text-xs text-gray-400">{files.length} file{files.length !== 1 ? 's' : ''}</span>
         </div>
+
+        {/* Expiry notice */}
+        <div className="px-5 py-2 bg-amber-50 border-b border-amber-100 flex items-center gap-2">
+          <span className="text-amber-500 text-sm">⏱</span>
+          <p className="text-xs text-amber-700">
+            Uploaded files are automatically removed from the server after <strong>{expiryMins} minutes</strong>{' '}
+            to protect your privacy. Download results before they expire.
+          </p>
+        </div>
+
         <div className="divide-y divide-gray-50">
           {files.map(f => (
             <div key={f.file_id} className="flex items-center gap-3 px-5 py-3 hover:bg-gray-50">
-              <span className="text-xl">📄</span>
+              {/* File type icon */}
+              <span className="text-xl flex-shrink-0">
+                {/\.(mp[34]|mov|avi|webm|mkv|m4a|wav|flac)$/i.test(f.filename) ? '🎬'
+                  : /\.(png|jpg|jpeg|webp)$/i.test(f.filename) ? '🖼️'
+                  : /\.(xlsx?|csv)$/i.test(f.filename) ? '📊'
+                  : '📄'}
+              </span>
+
+              {/* Info */}
               <div className="flex-1 min-w-0">
                 <p className="text-sm font-medium text-gray-800 truncate">{f.filename}</p>
-                <p className="text-xs text-gray-400">
-                  {f.size_bytes ? `${(f.size_bytes / 1024).toFixed(0)} KB` : '—'}
-                  {f.output_mode && ` · ${f.output_mode}`}
+                <div className="flex items-center flex-wrap gap-1.5 mt-0.5">
+                  <span className="text-xs text-gray-400">
+                    {f.size_bytes ? `${(f.size_bytes / 1024).toFixed(0)} KB` : '—'}
+                  </span>
+                  {f.output_mode && (
+                    <span className="text-xs text-gray-400">{f.output_mode}</span>
+                  )}
                   {f.job_status && (
-                    <span className={`ml-2 px-1.5 py-0.5 rounded text-xs ${f.job_status === 'completed' ? 'bg-green-100 text-green-700' : 'bg-gray-100 text-gray-500'}`}>
+                    <span className={`px-1.5 py-0.5 rounded text-xs font-medium ${
+                      f.job_status === 'completed' ? 'bg-green-100 text-green-700'
+                        : f.job_status === 'failed' ? 'bg-red-100 text-red-600'
+                        : 'bg-gray-100 text-gray-500'
+                    }`}>
                       {f.job_status}
                     </span>
                   )}
-                </p>
+                </div>
               </div>
-              <span className="text-xs text-gray-400 hidden sm:block">
-                {f.created_at ? new Date(f.created_at).toLocaleDateString() : '—'}
+
+              {/* TTL countdown */}
+              {f.ttl_seconds !== undefined && (
+                <TtlBadge ttlSeconds={f.ttl_seconds} />
+              )}
+
+              {/* Uploaded date */}
+              <span className="text-xs text-gray-400 hidden md:block whitespace-nowrap">
+                {f.created_at ? new Date(f.created_at).toLocaleTimeString() : '—'}
               </span>
+
+              {/* Delete button */}
               <button
                 onClick={() => setConfirm(f)}
                 disabled={deleting === f.file_id}
-                className="p-1.5 text-gray-400 hover:text-red-500 hover:bg-red-50 rounded transition"
-                title="Delete file"
+                className="p-1.5 text-gray-400 hover:text-red-500 hover:bg-red-50 rounded transition flex-shrink-0"
+                title="Delete file now"
               >
                 {deleting === f.file_id ? '…' : '🗑'}
               </button>

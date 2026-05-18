@@ -372,14 +372,49 @@ Shows all files uploaded through the Pipeline:
 
 | Column | Description |
 |--------|-------------|
-| Filename | Original uploaded filename |
+| Filename | Original uploaded filename with type icon (📄 doc, 🖼️ image, 🎬 media, 📊 sheet) |
 | Size | File size in KB or MB |
 | Output Mode | What was generated from this file |
 | Status | Job outcome (completed / failed) |
-| Date | Upload date |
-| 🗑 | Delete button — removes the file record |
+| Expires | Live countdown timer (e.g. `4m 12s`) showing time until auto-deletion |
+| Date | Upload time (HH:MM:SS) |
+| 🗑 | Delete button — removes the file immediately |
 
-**Deleting a file:** Click the trash icon → confirm in the modal. This removes the database record. The generated output (questions/summary) is not deleted.
+### Automatic File Deletion (Privacy-First)
+
+> **Uploaded files are automatically removed after 5 minutes.**
+
+This is a deliberate privacy and storage feature, not a limitation:
+
+- **Immediate deletion** — the raw file is deleted from disk as soon as the pipeline finishes extracting its text. Only the generated output (questions/summary) is kept.
+- **Background sweeper** — a background task runs every 60 seconds and removes any leftover files older than 5 minutes (safety net for abandoned uploads or crashes).
+- **Double safety net** — files that are still being processed are left alone; they are only swept after the job completes or after 10 minutes maximum.
+
+**The live countdown badge** turns orange and pulses when less than 60 seconds remain.
+
+```
+┌───────────────────────────────────────────────────┐
+│  📄 report.pdf   25 KB   questions   ✅  [4m 12s] │  ← amber badge
+│  🖼️ diagram.png  1.2 MB  questions   ✅  [  45s] │  ← orange+pulse
+│  🎬 lecture.mp4  80 MB  both        ✅  [expired]│  ← red badge
+└───────────────────────────────────────────────────┘
+```
+
+### Manual Deletion
+
+Click the **🗑** trash icon → confirm in the modal → file is deleted immediately (both from disk and the database record). The generated Markdown and PDF outputs for that run are also removed.
+
+> **Tip:** Download your results before the 5-minute timer expires. The **Download** button is available in the job status card immediately after a run completes.
+
+### Configuring the Expiry Window
+
+The default is 5 minutes. To change it, set the `FILE_EXPIRY_SECONDS` environment variable on the server:
+
+```
+FILE_EXPIRY_SECONDS=600   # 10 minutes
+FILE_EXPIRY_SECONDS=60    # 1 minute (aggressive cleanup)
+FILE_EXPIRY_SECONDS=0     # keep files indefinitely (not recommended)
+```
 
 ---
 
@@ -417,6 +452,7 @@ You can reply to any review by clicking **"↩ Reply"** and entering your text.
 | Min questions | **1** |
 | Rate limit | **10 requests/hour** per user |
 | Spike limit | **3 requests/sec** |
+| File retention | **5 minutes** (auto-deleted after pipeline completes or 5 min elapses) |
 
 **Tips for best results:**
 - ✅ Use text-based PDFs (not scanned images) for fastest processing

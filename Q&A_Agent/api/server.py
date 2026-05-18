@@ -24,7 +24,7 @@ import sqlite3
 import threading
 import time
 import uuid
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from queue import Empty, Queue
 from typing import Any
@@ -78,9 +78,10 @@ API_DIR         = Path(__file__).parent
 TEMP_UPLOAD_DIR = API_DIR / "uploads"
 TEMP_UPLOAD_DIR.mkdir(exist_ok=True)
 
-MAX_FILE_BYTES  = 25 * 1024 * 1024   # 25 MB hard limit (enforced server-side)
-MAX_QUESTIONS   = 20
-MIN_QUESTIONS   = 1
+MAX_FILE_BYTES      = 25 * 1024 * 1024   # 25 MB hard limit (enforced server-side)
+MAX_QUESTIONS       = 20
+MIN_QUESTIONS       = 1
+FILE_EXPIRY_SECONDS = int(os.getenv("FILE_EXPIRY_SECONDS", "300"))  # 5 min default
 
 # ── Geolocation helper ────────────────────────────────────────────────────────
 _geo_cache: dict[str, dict] = {}
@@ -445,11 +446,19 @@ def _execute_pipeline(job: dict[str, Any]) -> None:
         pdf_path         = result.get("output_pdf_path", "")
         duration_ms      = (time.monotonic() - t_pipeline_start) * 1000
 
-        # ── 3. Cache result ───────────────────────────────────────────────────
+        # ── 3. Delete the uploaded file now — text has been extracted ────────
+        # The pipeline reads input_source only during the ingestion stage.
+        # Once that stage is done the file is no longer needed, so we remove
+        # it immediately rather than waiting for the sweeper.
+        if Path(input_source).exists() and Path(input_source).is_relative_to(TEMP_UPLOAD_DIR):
+            _delete_upload(input_source)
+            logger.debug("Deleted upload after pipeline: %s", Path(input_source).name)
+
+        # ── 4. Cache result ───────────────────────────────────────────────────
         if markdown_content:
             set_cached(cache_key, markdown_content)
 
-        # ── 4. Persist to SQLite + PostgreSQL ─────────────────────────────────
+        # ── 5. Persist to SQLite + PostgreSQL ─────────────────────────────────
         _update_job_status(pipeline_id, "completed",
                            result_markdown=markdown_content,
                            result_pdf_path=pdf_path)
@@ -473,17 +482,75 @@ def _execute_pipeline(job: dict[str, Any]) -> None:
                            error_message=f"File not found: {exc}")
         update_job(pipeline_id, status="failed", error_message=str(exc))
         save_stage_timing(pipeline_id, "total_pipeline", duration_ms, "failed")
+        if Path(input_source).is_relative_to(TEMP_UPLOAD_DIR):
+            _delete_upload(input_source)
 
     except Exception as exc:  # noqa: BLE001
         duration_ms = (time.monotonic() - t_pipeline_start) * 1000
         logger.exception("Pipeline error in job %s: %s", pipeline_id, exc,
                          extra={"pipeline_id": pipeline_id})
-        # Sanitise the user-facing message — never expose model names, API details,
-        # or internal stack info. Log the full error internally above.
         user_msg = _sanitise_error(exc)
         _update_job_status(pipeline_id, "failed", error_message=user_msg)
         update_job(pipeline_id, status="failed", error_message=user_msg)
         save_stage_timing(pipeline_id, "total_pipeline", duration_ms, "failed")
+        if Path(input_source).is_relative_to(TEMP_UPLOAD_DIR):
+            _delete_upload(input_source)
+
+
+def _delete_upload(file_path: str | None, pipeline_id: str | None = None) -> None:
+    """Remove an uploaded file from disk (best-effort, never raises)."""
+    if file_path:
+        try:
+            Path(file_path).unlink(missing_ok=True)
+        except Exception as exc:
+            logger.debug("Could not delete upload %s: %s", file_path, exc)
+    # Also remove generated output artefacts if present
+    if pipeline_id:
+        for suffix in ("_qa.md", "_qa.pdf"):
+            try:
+                Path(str(config.OUTPUT_DIR / f"{pipeline_id}{suffix}")).unlink(missing_ok=True)
+            except Exception:
+                pass
+
+
+def _file_sweeper_loop() -> None:
+    """
+    Background thread: scan the uploads directory every 60 s and delete any
+    file that is older than FILE_EXPIRY_SECONDS and whose job has finished
+    (completed or failed) — or that has been sitting for 2× the expiry window
+    regardless of job status (safety net for crashes).
+    """
+    import glob as _glob
+    while True:
+        time.sleep(60)
+        try:
+            now = time.time()
+            hard_cutoff = now - FILE_EXPIRY_SECONDS * 2  # absolute safety net
+            soft_cutoff = now - FILE_EXPIRY_SECONDS       # prefer job-aware delete
+
+            for fpath in Path(TEMP_UPLOAD_DIR).glob("*"):
+                if not fpath.is_file():
+                    continue
+                age = now - fpath.stat().st_mtime
+                if age < FILE_EXPIRY_SECONDS:
+                    continue  # too new — skip
+
+                # Extract pipeline_id from filename prefix (format: <pid>_<filename>)
+                pid = fpath.name.split("_")[0] if "_" in fpath.name else None
+
+                # Soft: delete only if job is done
+                if age < FILE_EXPIRY_SECONDS * 2 and pid:
+                    with _jobs_lock:
+                        job_status = _jobs_db.get(pid, {}).get("status", "unknown")
+                    if job_status in ("queued", "processing"):
+                        continue  # job still running — don't touch the file yet
+
+                _delete_upload(str(fpath))
+                logger.info(
+                    "Sweeper deleted expired upload: %s (age %.0fs)", fpath.name, age
+                )
+        except Exception as exc:
+            logger.warning("File sweeper error: %s", exc)
 
 
 def _sanitise_error(exc: Exception) -> str:
@@ -947,6 +1014,11 @@ async def startup():
     _worker_thread.start()
     logger.info("Background worker thread started")
 
+    # Start upload file sweeper — deletes files older than FILE_EXPIRY_SECONDS
+    sweeper = threading.Thread(target=_file_sweeper_loop, daemon=True, name="file-sweeper")
+    sweeper.start()
+    logger.info("File sweeper started (expiry=%ds)", FILE_EXPIRY_SECONDS)
+
     # Start keep-alive pinger (no-op locally; active on Render when env var is set)
     pinger = threading.Thread(target=_keep_alive_pinger, daemon=True, name="keep-alive")
     pinger.start()
@@ -1098,12 +1170,29 @@ async def reply_to_review(request: Request, review_id: str, body: ReplyRequest):
 @app.get("/api/files", tags=["Files"])
 @limiter.limit("60/minute")
 async def list_files(request: Request, limit: int = 50):
-    """List uploaded files tracked in the database."""
+    """List uploaded files tracked in the database.
+
+    Each file record includes:
+      • expires_at  — ISO timestamp when the file will be auto-deleted
+      • ttl_seconds — seconds remaining until auto-deletion (negative = already expired)
+    """
+    now = datetime.now(timezone.utc)
     files = get_uploaded_files(min(limit, 200))
     for f in files:
         if hasattr(f.get("created_at"), "isoformat"):
             f["created_at"] = f["created_at"].isoformat()
-    return {"files": files}
+        # Compute TTL
+        try:
+            created = datetime.fromisoformat(str(f["created_at"]))
+            if not created.tzinfo:
+                created = created.replace(tzinfo=timezone.utc)
+            expires = created + timedelta(seconds=FILE_EXPIRY_SECONDS)
+            f["expires_at"]  = expires.isoformat()
+            f["ttl_seconds"] = max(0, int((expires - now).total_seconds()))
+        except Exception:
+            f["expires_at"]  = None
+            f["ttl_seconds"] = FILE_EXPIRY_SECONDS
+    return {"files": files, "expiry_seconds": FILE_EXPIRY_SECONDS}
 
 
 @app.delete("/api/files/{file_id}", tags=["Files"])
