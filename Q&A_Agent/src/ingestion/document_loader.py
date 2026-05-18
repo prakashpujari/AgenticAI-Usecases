@@ -102,7 +102,38 @@ def _load_docx(path: Path) -> str:
 
 
 def _load_xlsx(path: Path) -> str:
-    """Extract text from an .xlsx / .xls spreadsheet using openpyxl."""
+    """Extract text from an .xlsx (openpyxl) or legacy .xls (xlrd) spreadsheet."""
+    suffix = path.suffix.lower()
+
+    # ── Legacy .xls format (Excel 97-2003) ──────────────────────────────────
+    if suffix == ".xls":
+        try:
+            import xlrd
+        except ImportError as exc:
+            raise ImportError(
+                "xlrd is required to read legacy .xls files.\n"
+                "  pip install xlrd"
+            ) from exc
+        wb = xlrd.open_workbook(str(path))
+        rows: list[str] = []
+        for sheet in wb.sheets():
+            rows.append(f"=== Sheet: {sheet.name} ===")
+            for rx in range(sheet.nrows):
+                cells = [str(sheet.cell_value(rx, cx)) for cx in range(sheet.ncols)]
+                line = "\t".join(cells).strip()
+                if line:
+                    rows.append(line)
+        text = "\n".join(rows)
+        if not text.strip():
+            raise ValueError(f"No extractable data found in spreadsheet: {path}")
+        logger.info(
+            "Loaded XLS '%s' — %d rows, %d chars",
+            path.name, len(rows), len(text),
+            extra={"file": str(path), "char_count": len(text)},
+        )
+        return text
+
+    # ── Modern .xlsx format ──────────────────────────────────────────────────
     try:
         import openpyxl
     except ImportError as exc:
@@ -112,11 +143,10 @@ def _load_xlsx(path: Path) -> str:
         ) from exc
 
     wb = openpyxl.load_workbook(str(path), read_only=True, data_only=True)
-    rows: list[str] = []
+    rows = []
     for sheet in wb.worksheets:
         rows.append(f"=== Sheet: {sheet.title} ===")
         for row in sheet.iter_rows(values_only=True):
-            # Skip entirely empty rows
             cells = [str(c) if c is not None else "" for c in row]
             line = "\t".join(cells).strip()
             if line:
@@ -127,10 +157,8 @@ def _load_xlsx(path: Path) -> str:
     if not text.strip():
         raise ValueError(f"No extractable data found in spreadsheet: {path}")
     logger.info(
-        "Loaded spreadsheet '%s' — %d rows, %d chars",
-        path.name,
-        len(rows),
-        len(text),
+        "Loaded XLSX '%s' — %d rows, %d chars",
+        path.name, len(rows), len(text),
         extra={"file": str(path), "char_count": len(text)},
     )
     return text
@@ -752,29 +780,90 @@ def _load_youtube_transcript(url: str) -> str:
         raise ValueError("Could not fetch the YouTube transcript." + hint) from whisper_exc
 
 
+# Groq Whisper natively accepts these containers/codecs
+_WHISPER_NATIVE = {".flac", ".mp3", ".mp4", ".mpeg", ".mpga", ".m4a", ".wav", ".webm"}
+
+# Formats that need ffmpeg pre-conversion to WAV before Whisper can process them
+_NEEDS_FFMPEG_CONVERSION = {".avi", ".mov", ".mkv"}
+
+
+def _convert_to_wav(video_path: Path) -> Path:
+    """
+    Use system ffmpeg to extract audio from a video file and save as 16-kHz mono WAV.
+    Returns a new temp Path; caller is responsible for cleanup.
+    Raises EnvironmentError if ffmpeg is not installed.
+    """
+    import shutil
+    import subprocess
+
+    if not shutil.which("ffmpeg"):
+        raise EnvironmentError(
+            f"{video_path.suffix.upper()} transcription requires ffmpeg, which is not "
+            "installed on this server. Please convert your video to MP4, WEBM, or MP3 "
+            "before uploading, or install ffmpeg on the server."
+        )
+
+    wav_path = Path(tempfile.mktemp(suffix=".wav"))
+    cmd = [
+        "ffmpeg", "-y",
+        "-i", str(video_path),
+        "-ar", "16000",          # 16 kHz sample rate (Whisper optimum)
+        "-ac", "1",              # mono
+        "-f", "wav",
+        str(wav_path),
+        "-loglevel", "error",
+    ]
+    result = subprocess.run(cmd, capture_output=True, timeout=120)
+    if result.returncode != 0:
+        wav_path.unlink(missing_ok=True)
+        raise ValueError(
+            f"ffmpeg failed to extract audio from '{video_path.name}': "
+            + result.stderr.decode(errors="replace")[:300]
+        )
+    logger.info("ffmpeg: converted %s → WAV (%d KB)", video_path.name,
+                wav_path.stat().st_size // 1024)
+    return wav_path
+
+
 def _load_media_with_openai(path: Path) -> str:
-    """Transcribe local audio/video files with Groq speech-to-text (Whisper)."""
+    """Transcribe local audio/video files with Groq Whisper (speech-to-text).
+
+    Natively supported: mp3, mp4, m4a, wav, webm, flac, mpeg
+    Auto-converted via ffmpeg: avi, mov, mkv
+    """
     if not config.GROQ_API_KEY:
         raise EnvironmentError("GROQ_API_KEY is required for audio/video ingestion.")
 
-    from groq import Groq
+    suffix = path.suffix.lower()
+    converted_wav: Path | None = None
 
-    client = Groq(api_key=config.GROQ_API_KEY)
-    with path.open("rb") as media_file:
-        transcript = client.audio.transcriptions.create(
-            model="whisper-large-v3",
-            file=media_file,
-            response_format="text",
-        )
+    # Formats Groq Whisper cannot handle natively — convert first
+    if suffix in _NEEDS_FFMPEG_CONVERSION:
+        converted_wav = _convert_to_wav(path)
+        target = converted_wav
+    else:
+        target = path
+
+    try:
+        from groq import Groq
+        client = Groq(api_key=config.GROQ_API_KEY)
+        with target.open("rb") as media_file:
+            transcript = client.audio.transcriptions.create(
+                model="whisper-large-v3",
+                file=media_file,
+                response_format="text",
+            )
+    finally:
+        if converted_wav:
+            converted_wav.unlink(missing_ok=True)
 
     text = transcript.strip() if isinstance(transcript, str) else str(transcript).strip()
     if not text:
-        raise ValueError(f"No transcript text produced for media file: {path}")
+        raise ValueError(f"No speech detected in media file: {path.name}")
 
     logger.info(
         "Transcribed media '%s' — %d chars",
-        path.name,
-        len(text),
+        path.name, len(text),
         extra={"file": str(path), "char_count": len(text)},
     )
     return text

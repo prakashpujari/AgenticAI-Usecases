@@ -88,7 +88,7 @@ ALLOWED_EXTENSIONS = frozenset({
     ".mp4", ".webm", ".mov", ".avi", ".mkv",
 })
 
-MAX_FILE_BYTES = 50 * 1024 * 1024  # 50 MB
+MAX_FILE_BYTES = 25 * 1024 * 1024  # 25 MB — matches server.py and frontend
 
 
 def _is_private_host(hostname: str) -> bool:
@@ -177,5 +177,5 @@ def validate_file(file: UploadFile, request_id: str | None = None) -> None:
 
     if file.size and file.size > MAX_FILE_BYTES:
         api_error(413, E.FILE_TOO_LARGE,
-                  f"File exceeds the 50 MB size limit ({file.size // (1024*1024)} MB received).",
+                  f"File exceeds the 25 MB size limit ({file.size // (1024*1024)} MB received).",
                   request_id=request_id)
