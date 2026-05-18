@@ -168,6 +168,8 @@ CREATE TABLE IF NOT EXISTS access_logs (
     country_code TEXT,
     region       TEXT,
     city         TEXT,
+    latitude     REAL,
+    longitude    REAL,
     request_type TEXT,
     endpoint     TEXT,
     latency_ms   REAL,
@@ -197,6 +199,9 @@ _MIGRATIONS_PG = [
     "ALTER TABLE qa_reviews ALTER COLUMN rating DROP NOT NULL",
     "ALTER TABLE qa_reviews DROP CONSTRAINT IF EXISTS qa_reviews_rating_check",
     "ALTER TABLE qa_reviews ADD CONSTRAINT qa_reviews_rating_check CHECK (rating IS NULL OR rating BETWEEN 1 AND 5)",
+    # Add lat/lon for geographic map markers
+    "ALTER TABLE access_logs ADD COLUMN IF NOT EXISTS latitude REAL",
+    "ALTER TABLE access_logs ADD COLUMN IF NOT EXISTS longitude REAL",
 ]
 
 
@@ -305,6 +310,8 @@ def _init_sqlite() -> None:
                 country_code TEXT,
                 region       TEXT,
                 city         TEXT,
+                latitude     REAL,
+                longitude    REAL,
                 request_type TEXT,
                 endpoint     TEXT,
                 latency_ms   REAL,
@@ -319,6 +326,8 @@ def _init_sqlite() -> None:
         for col_sql in [
             "ALTER TABLE qa_reviews ADD COLUMN reviewer_name TEXT",
             "ALTER TABLE qa_reviews ADD COLUMN parent_review_id TEXT",
+            "ALTER TABLE access_logs ADD COLUMN latitude REAL",
+            "ALTER TABLE access_logs ADD COLUMN longitude REAL",
         ]:
             try:
                 conn.execute(col_sql)
@@ -932,13 +941,16 @@ def save_access_log(log: dict[str, Any]) -> None:
                     cur.execute("""
                         INSERT INTO access_logs
                           (log_id, ip, country, country_code, region, city,
+                           latitude, longitude,
                            request_type, endpoint, latency_ms, status_code, created_at)
-                        VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
+                        VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
                         ON CONFLICT (log_id) DO NOTHING
                     """, (
                         lid, log.get("ip"), log.get("country"), log.get("country_code"),
-                        log.get("region"), log.get("city"), log.get("request_type"),
-                        log.get("endpoint"), log.get("latency_ms"), log.get("status_code"), now,
+                        log.get("region"), log.get("city"),
+                        log.get("latitude"), log.get("longitude"),
+                        log.get("request_type"), log.get("endpoint"),
+                        log.get("latency_ms"), log.get("status_code"), now,
                     ))
             return
         except Exception as exc:
@@ -948,11 +960,14 @@ def save_access_log(log: dict[str, Any]) -> None:
         conn.execute("""
             INSERT OR IGNORE INTO access_logs
               (log_id, ip, country, country_code, region, city,
+               latitude, longitude,
                request_type, endpoint, latency_ms, status_code, created_at)
-            VALUES (?,?,?,?,?,?,?,?,?,?,?)
+            VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)
         """, (lid, log.get("ip"), log.get("country"), log.get("country_code"),
-              log.get("region"), log.get("city"), log.get("request_type"),
-              log.get("endpoint"), log.get("latency_ms"), log.get("status_code"), now))
+              log.get("region"), log.get("city"),
+              log.get("latitude"), log.get("longitude"),
+              log.get("request_type"), log.get("endpoint"),
+              log.get("latency_ms"), log.get("status_code"), now))
         conn.commit()
 
 
@@ -1058,4 +1073,185 @@ def get_analytics_stats() -> dict:
             "by_type":        by_type,
             "latency_trend":  [],
             "recent":         recent,
+        }
+
+
+def get_geo_analytics() -> dict:
+    """Return geo-aggregated data: city markers with lat/lon, country breakdown, type distribution."""
+    _empty: dict = {
+        "total_requests": 0, "markers": [], "by_country": [],
+        "by_type": [], "latency_trend": [], "recent": [],
+    }
+
+    if _using_postgres:
+        try:
+            with _pg_conn() as conn:
+                with conn.cursor() as cur:
+                    cur.execute("SELECT COUNT(*) FROM access_logs")
+                    total = cur.fetchone()[0] or 0
+
+                    # City-level markers (only rows that have lat/lon)
+                    cur.execute("""
+                        SELECT country_code, country, region, city,
+                               ROUND(AVG(latitude)::numeric, 4)::float  AS lat,
+                               ROUND(AVG(longitude)::numeric, 4)::float AS lon,
+                               COUNT(*)  AS cnt,
+                               ROUND(AVG(NULLIF(latency_ms,0))::numeric, 0)::float AS avg_ms,
+                               COUNT(*) FILTER (WHERE request_type='questions') AS qna,
+                               COUNT(*) FILTER (WHERE request_type='text')      AS summary_c,
+                               COUNT(*) FILTER (WHERE request_type='both')      AS both_c
+                        FROM access_logs
+                        WHERE latitude IS NOT NULL AND longitude IS NOT NULL
+                          AND country_code IS NOT NULL AND country_code != 'LO'
+                        GROUP BY country_code, country, region, city
+                        ORDER BY cnt DESC LIMIT 200
+                    """)
+                    markers = []
+                    for row in cur.fetchall():
+                        lat, lon = float(row[4] or 0), float(row[5] or 0)
+                        if lat == 0.0 and lon == 0.0:
+                            continue
+                        markers.append({
+                            "lat":          lat,
+                            "lon":          lon,
+                            "country":      row[1] or "",
+                            "country_code": row[0] or "",
+                            "region":       row[2] or "",
+                            "city":         row[3] or "",
+                            "count":        row[6],
+                            "avg_ms":       float(row[7] or 0),
+                            "qna":          row[8] or 0,
+                            "summary":      row[9] or 0,
+                            "both":         row[10] or 0,
+                        })
+
+                    # Country-level (includes rows without lat/lon via choropleth)
+                    cur.execute("""
+                        SELECT country_code, country,
+                               ROUND(AVG(latitude)::numeric, 2)::float  AS lat,
+                               ROUND(AVG(longitude)::numeric, 2)::float AS lon,
+                               COUNT(*) AS cnt,
+                               ROUND(AVG(NULLIF(latency_ms,0))::numeric, 0)::float AS avg_ms
+                        FROM access_logs
+                        WHERE country_code IS NOT NULL AND country_code != 'LO'
+                        GROUP BY country_code, country ORDER BY cnt DESC LIMIT 50
+                    """)
+                    by_country = []
+                    for row in cur.fetchall():
+                        by_country.append({
+                            "country_code": row[0],
+                            "country":      row[1],
+                            "lat":          float(row[2] or 0),
+                            "lon":          float(row[3] or 0),
+                            "count":        row[4],
+                            "pct":          round(row[4] / max(1, total) * 100, 1),
+                            "avg_ms":       float(row[5] or 0),
+                        })
+
+                    # By request type
+                    cur.execute("""
+                        SELECT COALESCE(request_type,'unknown') AS rt,
+                               COUNT(*) AS cnt,
+                               ROUND(AVG(NULLIF(latency_ms,0))::numeric, 0)::float AS avg_ms
+                        FROM access_logs GROUP BY rt ORDER BY cnt DESC
+                    """)
+                    by_type = [
+                        {"type": r[0], "count": r[1], "avg_ms": float(r[2] or 0)}
+                        for r in cur.fetchall()
+                    ]
+
+                    # Hourly latency trend (last 24 h)
+                    cur.execute("""
+                        SELECT date_trunc('hour', created_at) AS hour,
+                               ROUND(AVG(NULLIF(latency_ms,0))::numeric, 1) AS avg_ms,
+                               COUNT(*) AS requests
+                        FROM access_logs
+                        WHERE created_at > NOW() - INTERVAL '24 hours'
+                        GROUP BY hour ORDER BY hour
+                    """)
+                    latency_trend = [
+                        {"hour": str(r[0]), "avg_ms": float(r[1] or 0), "requests": r[2]}
+                        for r in cur.fetchall()
+                    ]
+
+                    # Recent accesses
+                    cur.execute("""
+                        SELECT ip, country, country_code, region, city,
+                               latitude, longitude, request_type, latency_ms, created_at
+                        FROM access_logs ORDER BY created_at DESC LIMIT 20
+                    """)
+                    cols = [d[0] for d in cur.description]
+                    recent = [dict(zip(cols, r)) for r in cur.fetchall()]
+                    for r in recent:
+                        if hasattr(r.get("created_at"), "isoformat"):
+                            r["created_at"] = r["created_at"].isoformat()
+
+                    return {
+                        "total_requests": total,
+                        "markers":        markers,
+                        "by_country":     by_country,
+                        "by_type":        by_type,
+                        "latency_trend":  latency_trend,
+                        "recent":         recent,
+                    }
+        except Exception as exc:
+            logger.warning("PG get_geo_analytics failed: %s", exc)
+
+    # SQLite fallback
+    with _sqlite_lock, sqlite3.connect(str(_SQLITE_PATH)) as conn:
+        conn.row_factory = sqlite3.Row
+        total = conn.execute("SELECT COUNT(*) FROM access_logs").fetchone()[0] or 0
+        markers = []
+        for r in conn.execute("""
+            SELECT country_code, country, region, city,
+                   AVG(latitude) AS lat, AVG(longitude) AS lon,
+                   COUNT(*) AS cnt,
+                   AVG(CASE WHEN latency_ms>0 THEN latency_ms END) AS avg_ms,
+                   SUM(CASE WHEN request_type='questions' THEN 1 ELSE 0 END) AS qna,
+                   SUM(CASE WHEN request_type='text'      THEN 1 ELSE 0 END) AS summary_c,
+                   SUM(CASE WHEN request_type='both'      THEN 1 ELSE 0 END) AS both_c
+            FROM access_logs
+            WHERE latitude IS NOT NULL AND longitude IS NOT NULL
+              AND country_code IS NOT NULL AND country_code != 'LO'
+            GROUP BY country_code, country, region, city ORDER BY cnt DESC LIMIT 200
+        """).fetchall():
+            d = dict(r)
+            lat, lon = float(d.get("lat") or 0), float(d.get("lon") or 0)
+            if lat == 0.0 and lon == 0.0:
+                continue
+            markers.append({
+                "lat": lat, "lon": lon,
+                "country": d["country"] or "", "country_code": d["country_code"] or "",
+                "region": d["region"] or "", "city": d["city"] or "",
+                "count": d["cnt"], "avg_ms": float(d.get("avg_ms") or 0),
+                "qna": d["qna"] or 0, "summary": d["summary_c"] or 0, "both": d["both_c"] or 0,
+            })
+        by_country = []
+        for r in conn.execute("""
+            SELECT country_code, country, AVG(latitude) AS lat, AVG(longitude) AS lon,
+                   COUNT(*) AS cnt, AVG(CASE WHEN latency_ms>0 THEN latency_ms END) AS avg_ms
+            FROM access_logs WHERE country_code IS NOT NULL AND country_code != 'LO'
+            GROUP BY country_code, country ORDER BY cnt DESC LIMIT 50
+        """).fetchall():
+            d = dict(r)
+            by_country.append({
+                "country_code": d["country_code"], "country": d["country"],
+                "lat": float(d.get("lat") or 0), "lon": float(d.get("lon") or 0),
+                "count": d["cnt"], "pct": round(d["cnt"] / max(1, total) * 100, 1),
+                "avg_ms": float(d.get("avg_ms") or 0),
+            })
+        by_type = [dict(r) for r in conn.execute("""
+            SELECT COALESCE(request_type,'unknown') AS type, COUNT(*) AS count,
+                   AVG(CASE WHEN latency_ms>0 THEN latency_ms END) AS avg_ms
+            FROM access_logs GROUP BY request_type ORDER BY count DESC
+        """).fetchall()]
+        recent = [dict(r) for r in conn.execute("""
+            SELECT ip, country, country_code, region, city, latitude, longitude,
+                   request_type, latency_ms, created_at
+            FROM access_logs ORDER BY created_at DESC LIMIT 20
+        """).fetchall()]
+        return {
+            "total_requests": total, "markers": markers,
+            "by_country": by_country, "by_type": by_type,
+            "latency_trend": [], "recent": recent,
         }

@@ -57,7 +57,7 @@ from api.database import (
     save_review, get_reviews, get_review_stats,
     get_reviews_with_replies,
     save_uploaded_file, get_uploaded_files, delete_uploaded_file,
-    save_access_log, get_analytics_stats,
+    save_access_log, get_analytics_stats, get_geo_analytics,
 )
 from api.cache import make_cache_key, get_cached, set_cached
 
@@ -88,10 +88,12 @@ _geo_fail_count: dict[str, int] = {}   # track consecutive failures per IP
 _geo_executor = __import__("concurrent.futures", fromlist=["ThreadPoolExecutor"]).ThreadPoolExecutor(max_workers=4)
 
 def _geolocate(ip: str) -> dict:
-    """Look up country/region for an IP via ip-api.com (free, cached in-process)."""
-    _empty = {"country": "", "country_code": "", "region": "", "city": ""}
+    """Look up country/region/lat/lon for an IP via ip-api.com (free, cached in-process)."""
+    _empty = {"country": "", "country_code": "", "region": "", "city": "",
+              "latitude": None, "longitude": None}
     if not ip or ip in ("127.0.0.1", "::1", ""):
-        return {"country": "Local", "country_code": "LO", "region": "", "city": ""}
+        return {"country": "Local", "country_code": "LO", "region": "", "city": "",
+                "latitude": None, "longitude": None}
     if ip in _geo_cache:
         return _geo_cache[ip]
     # Skip after 3 consecutive failures for this IP to avoid blocking threads
@@ -99,9 +101,10 @@ def _geolocate(ip: str) -> dict:
         return _empty
     try:
         import urllib.request as _ur, json as _js
+        # lat,lon are free fields in ip-api.com
         with _ur.urlopen(
-            f"http://ip-api.com/json/{ip}?fields=country,countryCode,regionName,city,status",
-            timeout=2,      # reduced from 5s to avoid thread starvation
+            f"http://ip-api.com/json/{ip}?fields=status,country,countryCode,regionName,city,lat,lon",
+            timeout=2,
         ) as r:
             data = _js.loads(r.read())
         if data.get("status") == "success":
@@ -110,6 +113,8 @@ def _geolocate(ip: str) -> dict:
                 "country_code": data.get("countryCode", ""),
                 "region":       data.get("regionName", ""),
                 "city":         data.get("city", ""),
+                "latitude":     data.get("lat"),
+                "longitude":    data.get("lon"),
             }
             _geo_cache[ip] = result
             _geo_fail_count.pop(ip, None)
@@ -135,6 +140,8 @@ def _log_access(request: "Request", endpoint: str, request_type: str,
             "country_code": geo["country_code"],
             "region":       geo["region"],
             "city":         geo["city"],
+            "latitude":     geo.get("latitude"),
+            "longitude":    geo.get("longitude"),
             "request_type": request_type,
             "endpoint":     endpoint,
             "latency_ms":   lms,
@@ -1132,6 +1139,26 @@ async def analytics(request: Request):
     """Return aggregated geographic + latency + request-type analytics."""
     stats = get_analytics_stats()
     return stats
+
+
+@app.get("/api/analytics/geo", tags=["Analytics"])
+@limiter.limit("30/minute")
+async def analytics_geo(request: Request):
+    """Return geo-analytics: city/country markers with lat/lon, type breakdown, latency trend.
+
+    Response shape:
+    {
+      "total_requests": int,
+      "markers":   [{ lat, lon, country, country_code, region, city,
+                      count, avg_ms, qna, summary, both }],
+      "by_country":[{ country_code, country, lat, lon, count, pct, avg_ms }],
+      "by_type":   [{ type, count, avg_ms }],
+      "latency_trend": [{ hour, avg_ms, requests }],
+      "recent":    [{ ip, country, country_code, region, city, latitude, longitude,
+                      request_type, latency_ms, created_at }]
+    }
+    """
+    return get_geo_analytics()
 
 
 @app.get("/api/dashboard/cache-status", tags=["Dashboard"])
