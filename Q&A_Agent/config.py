@@ -55,7 +55,6 @@ LOGS_DIR.mkdir(exist_ok=True)
 
 # ─── File paths ────────────────────────────────────────────────────────────────
 SAMPLE_PDF_PATH: Path      = DATA_DIR   / "sample_document.pdf"
-FAISS_INDEX_PATH: Path     = DATA_DIR   / "faiss_index"
 OUTPUT_MARKDOWN_PATH: Path = OUTPUT_DIR / "qa_output.md"
 OUTPUT_PDF_PATH: Path      = OUTPUT_DIR / "qa_output.pdf"
 # Pipeline metrics JSON report — written at the end of every successful run.
@@ -80,9 +79,6 @@ GEMINI_MODEL: str    = os.getenv("GEMINI_MODEL", "gemini-2.5-flash")
 # → tick 'Make calls to the serverless Inference API'.
 HF_API_KEY: str   = os.getenv("HF_API_KEY", "")
 HF_MODEL: str     = os.getenv("HF_MODEL", "moonshotai/Kimi-K2-Instruct")
-
-# Embeddings use a local ONNX model via fastembed (Groq has no embedding API).
-EMBEDDING_MODEL: str = os.getenv("EMBEDDING_MODEL", "sentence-transformers/all-MiniLM-L6-v2")
 
 # ─── YouTube transcript (bypass cloud-IP block) ───────────────────────────────
 # Render/AWS datacenter IPs are blocked by YouTube for transcript requests.
@@ -146,22 +142,10 @@ CORS_ALLOWED_ORIGIN: str = os.getenv(
 )
 
 # ─── RAG / text-splitting ──────────────────────────────────────────────────────
-# CHUNK_SIZE controls the maximum number of characters per chunk fed to the
-# embeddings API.  Larger chunks → more context per retrieval result but
-# fewer unique chunks → lower recall diversity.
-CHUNK_SIZE: int    = int(os.getenv("CHUNK_SIZE", "1000"))
-# CHUNK_OVERLAP ensures adjacent chunks share context so sentence boundaries
-# don't cause a topic to be split across two non-overlapping chunks.
-CHUNK_OVERLAP: int = int(os.getenv("CHUNK_OVERLAP", "200"))
-
 # ─── Q&A generation ────────────────────────────────────────────────────────────
-NUM_QUESTIONS: int   = int(os.getenv("NUM_QUESTIONS", "10"))
-# TOP_K_RETRIEVAL: how many chunks are fetched per similarity query.
-# A higher value gives the LLM broader context at the cost of a larger prompt.
-TOP_K_RETRIEVAL: int = int(os.getenv("TOP_K_RETRIEVAL", "15"))
+NUM_QUESTIONS: int  = int(os.getenv("NUM_QUESTIONS", "10"))
 # TEMPERATURE = 0 → deterministic, factual responses.
-# TEMPERATURE > 0.5 → more creative / varied wording (not recommended for Q&A).
-TEMPERATURE: float   = float(os.getenv("TEMPERATURE", "0.3"))
+TEMPERATURE: float  = float(os.getenv("TEMPERATURE", "0.3"))
 
 # ─── Observability ─────────────────────────────────────────────────────────────
 # LOG_LEVEL applies to the console handler.  The file handler always captures

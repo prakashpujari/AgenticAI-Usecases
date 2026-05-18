@@ -5,7 +5,7 @@ langchain-groq>=0.2.0
 langchain-community>=0.3.0
 langchain-text-splitters>=0.3.0
 langchain-core>=0.3.0
-langchain-huggingface>=0.1.0
+# langchain-huggingface removed — embeddings no longer used (direct LLM context)
 
 # ── Groq SDK ──────────────────────────────────────────────────────────────────
 groq>=0.11.0
@@ -13,11 +13,9 @@ groq>=0.11.0
 # ── Google Gemini fallback LLM (free tier: 1500 req/day, 15 req/min) ──────────
 langchain-google-genai>=2.0.0
 
-# ── HuggingFace sentence embeddings (local, no API key required) ──────────────
-sentence-transformers>=3.0.0
-
-# ── Vector store ─────────────────────────────────────────────────────────────
-faiss-cpu>=1.8.0
+# NOTE: sentence-transformers and faiss-cpu removed — pipeline uses direct
+# full-text injection into LLM context window (no RAG/embeddings needed).
+# See src/generation/qa_generator.py generate_questions_from_text().
 
 # ── PDF extraction ────────────────────────────────────────────────────────────
 pypdf>=4.0.0

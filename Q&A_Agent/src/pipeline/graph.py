@@ -1,60 +1,47 @@
 """
 src/pipeline/graph.py
 ──────────────────────
-LangGraph orchestration for the Q&A Agent pipeline.
+LangGraph state machine for the Q&A Agent pipeline.
 
-Replaces the imperative if/elif branching in server.py and main.py with a
-typed state machine that explicitly models every valid execution path.
+No embeddings, no vector DB, no retrieval step.
+Full document text is passed directly to the LLM context window
+(up to 32K chars — covers 99% of real-world uploads without truncation).
 
 Graph topology
 ──────────────
 
-          ┌─────────────────┐
-          │  extract_text   │  (always)
-          └────────┬────────┘
-                   │
-          route_after_extract
-         ┌─────────┴──────────┐
-         │                    │
-   text / both            questions
-         │                    │
-  ┌──────▼───────┐    ┌───────▼──────┐
-  │ summarize    │    │  split_text  │
-  └──────┬───────┘    └───────┬──────┘
-         │                    │
-  route_after_summarize        │
-  ┌──────┴──────┐              │
-  │             │              │
- text          both            │
-  │             └──────────────┼──► build_vector_store
-  │                            │
-  │             ┌──────────────┘
-  │             │
-  │    ┌────────▼──────────┐
-  │    │ build_vector_store│
-  │    └────────┬──────────┘
-  │             │
-  │    ┌────────▼──────────┐
-  │    │ generate_questions│
-  │    └────────┬──────────┘
-  │             │
-  └──────────►──┤
+       ┌─────────────────┐
+       │  extract_text   │  load + clean text from any supported format
+       └────────┬────────┘
                 │
-       ┌────────▼──────────┐
-       │  format_output    │  (branches on output_mode internally)
-       └────────┬──────────┘
-                │
-       ┌────────▼──────────┐
-       │   convert_pdf     │
-       └────────┬──────────┘
-                │
-              [END]
+       route_after_extract
+      ┌─────────┴──────────┐
+      │                    │
+ text / both           questions
+      │                    │
+ ┌────▼──────┐      ┌──────▼────────────┐
+ │ summarize │      │ generate_questions│  direct text → LLM (no RAG)
+ └────┬──────┘      └──────┬────────────┘
+      │                    │
+ route_after_summarize      │
+ ┌────┴────┐                │
+ │         │                │
+text      both              │
+ │         └────────────────┘
+ │                    │
+ └────────────────────┤
+                      │
+           ┌──────────▼──────────┐
+           │   format_output     │  Markdown + PDF
+           └──────────┬──────────┘
+                      │
+                    [END]
 
 State schema
 ─────────────
-PipelineState holds all data produced by each stage.  Later nodes read from
-earlier nodes' outputs via the shared state dict.  FAISS vector stores are
-held in-memory (not serialisable) — no checkpointer is used.
+PipelineState carries only: clean_text, summary, questions, markdown_content
+plus pipeline metadata. No vector_store, no chunks — the LLM handles
+context selection internally using its full attention window.
 
 Public API
 ──────────
@@ -90,8 +77,6 @@ class PipelineState(TypedDict, total=False):
 
     # ── Stage outputs ─────────────────────────────────────────────────────────
     clean_text: str
-    chunks: list               # list[langchain Document]
-    vector_store: Any          # FAISS — in-memory only, not serialisable
     summary: str
     questions: list            # list[QuestionDict]
     markdown_content: str

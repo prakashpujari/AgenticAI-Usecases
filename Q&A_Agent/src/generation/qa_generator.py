@@ -705,26 +705,54 @@ _QA_DIRECT_HUMAN = "Document text:\n\n{text}\n\nGenerate {num_questions} MCQ que
 
 
 @traceable(name="generate_questions_from_text", run_type="llm", tags=["generation", "llm"])
+def _smart_truncate(text: str, max_chars: int) -> str:
+    """
+    Truncate long text while preserving coverage across the whole document.
+
+    Strategy: take 60% from the start (intro/definitions usually most dense)
+    + 40% from the end (conclusions/summaries).  This is far better than
+    head-only truncation for multi-chapter documents.
+    """
+    if len(text) <= max_chars:
+        return text
+    head = int(max_chars * 0.60)
+    tail = max_chars - head
+    return (
+        text[:head]
+        + "\n\n[... middle section omitted for length ...]\n\n"
+        + text[-tail:]
+    )
+
+
+# ── Context window budget per model (conservative, leaves room for prompt + output)
+# Groq free-tier TPM limits: llama-3.3-70b=6K, llama-3.1-8b=20K, gemma2-9b=15K
+# We budget ~8K tokens of input → ~32K chars (covers ~30-page documents fully)
+_MAX_CONTEXT_CHARS = 32_000
+
+
 def generate_questions_from_text(
     text: str,
     num_questions: int | None = None,
     request_id: str = "unknown",
 ) -> list[QuestionDict]:
     """
-    Generate MCQ questions directly from raw text — no embeddings or vector store needed.
+    Generate MCQ questions directly from raw text.
 
-    Uses the full Groq context window (up to 80 000 chars of text).
-    Falls back gracefully through retry + model fallback logic.
+    No embeddings, no vector store, no retrieval step needed.
+    The full document text (up to 32K chars ≈ 8K tokens) is passed directly
+    to the LLM so it can generate questions about ANY topic in the document.
+
+    32K chars covers:
+      • ~30-page PDF / Word doc (most upload cases)
+      • Any Wikipedia article
+      • Any audio/video transcript under ~45 min
+    For longer documents, _smart_truncate takes head + tail to preserve coverage.
     """
     if not config.GROQ_API_KEY:
         raise EnvironmentError("GROQ_API_KEY is not set.")
 
     num_questions = num_questions or config.NUM_QUESTIONS
-    # Keep context under 8 000 chars (~2 000 tokens) so the prompt + response
-    # stays well within Groq's 6 000 TPM free-tier limit.
-    max_chars = 8_000
-    if len(text) > max_chars:
-        text = text[:max_chars] + "\n\n[… document truncated for question generation …]"
+    text = _smart_truncate(text, _MAX_CONTEXT_CHARS)
 
     from langchain_core.prompts import ChatPromptTemplate  # lazy
     prompt = ChatPromptTemplate.from_messages([
