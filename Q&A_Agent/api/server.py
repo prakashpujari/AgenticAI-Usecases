@@ -423,6 +423,8 @@ def _execute_pipeline(job: dict[str, Any]) -> None:
         _ls_on  = os.getenv("LANGCHAIN_TRACING_V2", "").lower() in ("true", "1") and bool(_ls_key)
 
         if _ls_on:
+            result = None
+            _pipeline_succeeded = False
             try:
                 import langsmith as _ls
                 with _ls.trace(
@@ -438,14 +440,20 @@ def _execute_pipeline(job: dict[str, Any]) -> None:
                     tags = ["pipeline", output_mode],
                 ):
                     result = _invoke_graph()
+                    _pipeline_succeeded = True  # set BEFORE __exit__ runs
                 # flush() moved to Client in newer langsmith versions
                 try:
                     _ls.Client().flush()
                 except Exception:
                     pass
             except Exception as ls_exc:
-                logger.warning("LangSmith trace failed — running without tracing: %s", ls_exc)
-                result = _invoke_graph()
+                if not _pipeline_succeeded:
+                    # Pipeline itself failed — retry without tracing
+                    logger.warning("LangSmith trace failed — running without tracing: %s", ls_exc)
+                    result = _invoke_graph()
+                else:
+                    # Pipeline succeeded but LangSmith cleanup threw — preserve result
+                    logger.warning("LangSmith trace cleanup failed (result preserved): %s", ls_exc)
         else:
             result = _invoke_graph()
 

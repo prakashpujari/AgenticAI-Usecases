@@ -2,77 +2,20 @@
 
 ## System Architecture
 
-```
-┌─────────────────────────────────────────────────────────────────┐
-│                     USER'S BROWSER                              │
-│  React + Vite frontend (Vercel)                                 │
-│  ✓ File / URL upload      ✓ Real-time job polling              │
-│  ✓ YouTube URL detection  ✓ Dashboard (stats, history)         │
-│  ✓ PDF / Markdown preview ✓ Ratings & reviews                  │
-└──────────┬──────────────────────────────┬───────────────────────┘
-           │ REST (HTTPS)                 │ YouTube proxy (Edge fn)
-           │                             ▼
-           │                  ┌──────────────────────┐
-           │                  │  Vercel Edge Function │
-           │                  │  /api/youtube-        │
-           │                  │    transcript.js      │
-           │                  │  (fallback only;      │
-           │                  │   YouTube blocks CDN) │
-           │                  └──────────┬────────────┘
-           │                             │ falls through
-           ▼                             ▼
-┌──────────────────────────────────────────────────────────────────┐
-│              FastAPI Backend (Render — Oregon, free)             │
-│                                                                  │
-│  ┌──────────────┐  ┌────────────────┐  ┌────────────────────┐  │
-│  │ Rate limiter │  │ WAF / input    │  │  CORS middleware   │  │
-│  │ (Redis-      │  │ validation     │  │  (Vercel domain)   │  │
-│  │  backed)     │  │ (SSRF/XSS/SQLi)│  │                    │  │
-│  └──────┬───────┘  └───────┬────────┘  └────────────────────┘  │
-│         │                  │                                     │
-│         └──────────────────▼─────────────────────────────────── │
-│                    ┌──────────────┐                              │
-│                    │  Job Queue   │  (in-process FIFO)          │
-│                    └──────┬───────┘                              │
-│                           │                                      │
-│              ┌────────────▼────────────┐                        │
-│              │   LangGraph Pipeline    │                         │
-│              │                         │                         │
-│              │  extract_text           │  document_loader.py     │
-│              │    ↓                    │  pdf_extractor.py       │
-│              │  route_after_extract    │                         │
-│              │   ├─► summarize_text   │  qa_generator.py        │
-│              │   │     ↓ (both mode)  │  (Groq LLM)            │
-│              │   └─► generate_qs ◄───┘                         │
-│              │         ↓                                         │
-│              │  format_output          │  output_formatter.py   │
-│              │         ↓               │                         │
-│              │  convert_pdf            │  pdf_converter.py      │
-│              └────────────────────────┘                         │
-│                                                                  │
-│  ┌─────────────────┐   ┌──────────────────┐                    │
-│  │  Keep-alive     │   │  /api/debug/*    │                     │
-│  │  pinger         │   │  endpoints       │                     │
-│  │  (600s daemon)  │   │  (db, youtube)   │                     │
-│  └─────────────────┘   └──────────────────┘                    │
-└───────────┬──────────────────────┬───────────────────────────────┘
-            │                      │
-    ┌───────▼──────┐    ┌──────────▼──────────┐
-    │    Redis     │    │  External Render     │
-    │  (rate limit │    │  PostgreSQL          │
-    │   + cache)   │    │  (job persistence    │
-    │              │    │   + dashboard stats) │
-    └──────────────┘    └─────────────────────┘
-            │
-    ┌───────▼────────────┐
-    │  LangSmith         │
-    │  (smith.langchain  │
-    │   .com)            │
-    │  Traces every      │
-    │  LLM call &        │
-    │  pipeline stage    │
-    └────────────────────┘
-```
+![Architecture Diagram](screenshots/architecture_diagram.png)
+
+The diagram above shows the full system layout:
+
+- **Client layer** — React + Vite frontend on Vercel handles file/URL upload, YouTube URL detection, real-time job polling, PDF/Markdown preview, dashboard stats, and ratings.
+- **YouTube proxy** — Vercel Edge Function (`/api/youtube-transcript.js`) acts as a residential-IP fallback because YouTube blocks transcript requests from cloud datacenter IPs.
+- **FastAPI backend** (Render, Oregon, free tier) — three middleware layers guard every request:
+  - Rate limiter (Redis-backed)
+  - WAF / input validation (SSRF, XSS, SQLi)
+  - CORS middleware (locked to Vercel domain)
+- **Dual job queues** — two in-process FIFO queues feed two parallel worker threads, preventing the single worker bottleneck.
+- **LangGraph pipeline** — stateful graph with nodes: `extract_text → route_after_extract → summarize_text / generate_qs → format_output → convert_pdf`, backed by `document_loader.py`, `pdf_extractor.py`, `qa_generator.py` (Groq LLM), `output_formatter.py`, `pdf_converter.py`.
+- **Background daemons** — keep-alive pinger (600 s) prevents Render free-tier cold starts; `/api/debug/*` endpoints expose DB and YouTube diagnostics.
+- **External services** — Redis (rate limit + cache), LangSmith (LLM + pipeline tracing at smith.langchain.com), External Render PostgreSQL (job persistence + dashboard stats).
 
 ## Components
 
