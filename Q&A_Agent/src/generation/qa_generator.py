@@ -730,6 +730,94 @@ def _split_into_chunks(text: str, chunk_size: int = _CHUNK_CHARS,
     return [c for c in chunks if c]
 
 
+def _select_diverse_chunks(chunks: list[str], n: int) -> list[tuple[int, str]]:
+    """
+    Select n maximally topic-diverse chunks using TF-IDF + greedy farthest-point.
+
+    Algorithm:
+      1. Seed selection with chunk 0 (intro/overview) and chunk -1 (conclusion).
+      2. At each step, pick the candidate chunk whose maximum cosine similarity
+         to any already-selected chunk is the lowest (most different topic).
+      3. Repeat until n chunks are selected, then sort by document order.
+
+    This beats even-spacing because two adjacent chunks about the same topic
+    are treated as one — only the more informative one is kept.
+
+    Falls back to even spacing if sklearn is unavailable or the matrix build fails.
+    """
+    if len(chunks) <= n:
+        return list(enumerate(chunks))
+
+    try:
+        from sklearn.feature_extraction.text import TfidfVectorizer
+        from sklearn.metrics.pairwise import cosine_similarity
+        import numpy as np
+
+        vectorizer = TfidfVectorizer(
+            max_features=512,
+            stop_words="english",
+            sublinear_tf=True,      # dampen dominant high-frequency terms
+            min_df=1,
+        )
+        matrix = vectorizer.fit_transform(chunks).toarray()  # (n_chunks, n_features)
+        n_total = len(chunks)
+
+        selected: list[int] = [0]               # always include the intro chunk
+        if n > 1:
+            selected.append(n_total - 1)        # always include the conclusion chunk
+
+        while len(selected) < n:
+            sel_vecs = matrix[selected]
+            # Max similarity of every chunk to any already-selected chunk
+            max_sims = cosine_similarity(matrix, sel_vecs).max(axis=1)
+            for idx in selected:
+                max_sims[idx] = 2.0             # exclude already-selected (score > 1)
+            selected.append(int(np.argmin(max_sims)))   # most dissimilar chunk
+
+        selected.sort()                         # restore document order
+        result = [(i, chunks[i]) for i in selected]
+        logger.debug(
+            "Diversity selection: %d/%d chunks chosen (TF-IDF farthest-point)",
+            n, n_total,
+        )
+        return result
+
+    except Exception as exc:
+        logger.debug("TF-IDF diversity selection unavailable (%s) — even spacing", exc)
+        step = len(chunks) / n
+        indices = [int(i * step) for i in range(n)]
+        return [(i, chunks[i]) for i in indices]
+
+
+def _deduplicate_questions(
+    questions: list[QuestionDict],
+    threshold: float = 0.65,
+) -> list[QuestionDict]:
+    """
+    Remove near-duplicate questions by Jaccard token-overlap on question text.
+
+    Two questions are duplicates when the Jaccard similarity of their
+    lower-cased word sets exceeds `threshold`.  threshold=0.65 blocks
+    paraphrasings ("What is X?" vs "Which describes X?") that occur when
+    two overlapping chunks both generate questions about the same concept,
+    while still allowing distinct questions on the same broad topic.
+    """
+    def _jaccard(a: str, b: str) -> float:
+        sa, sb = set(a.lower().split()), set(b.lower().split())
+        return len(sa & sb) / len(sa | sb) if sa | sb else 1.0
+
+    kept: list[QuestionDict] = []
+    for q in questions:
+        q_text = q.get("question", "")
+        if not any(_jaccard(q_text, k.get("question", "")) >= threshold for k in kept):
+            kept.append(q)
+
+    removed = len(questions) - len(kept)
+    if removed:
+        logger.info("Deduplication removed %d near-duplicate question(s)", removed)
+    return kept
+
+
 # ─── Prompt templates ──────────────────────────────────────────────────────────
 
 _SUMMARISE_SYSTEM = """\
@@ -878,23 +966,20 @@ def generate_questions_from_text(
         )
         return questions
 
-    # ── Large document: map-reduce over sampled chunks ─────────────────────────
+    # ── Large document: map-reduce with diversity-aware chunk selection ────────
     chunks = _split_into_chunks(text, _CHUNK_CHARS, _CHUNK_OVERLAP)
     total_chunks = len(chunks)
 
-    # Evenly sample across the full document so every section is represented
+    # Diversity selection: pick maximally topic-diverse chunks (TF-IDF farthest-point)
+    # so we cover different subjects rather than repeating the most prominent topic.
     n_sample = min(total_chunks, _MAX_QA_CHUNKS)
-    indices = (
-        [int(i * total_chunks / n_sample) for i in range(n_sample)]
-        if total_chunks > n_sample else list(range(total_chunks))
-    )
-    selected = [(idx, chunks[idx]) for idx in indices]
+    selected = _select_diverse_chunks(chunks, n_sample)
 
     # Questions per chunk — ceiling so we get at least num_questions total
     qs_per_chunk = max(1, (num_questions + len(selected) - 1) // len(selected))
 
     logger.info(
-        "Q&A map-reduce: %d chars / %d total chunks → sampling %d chunks "
+        "Q&A map-reduce: %d chars / %d total chunks → %d diverse chunks selected "
         "(%d q/chunk, %d requested)",
         len(text), total_chunks, len(selected), qs_per_chunk, num_questions,
     )
@@ -919,11 +1004,15 @@ def generate_questions_from_text(
         if seq < len(selected) - 1:
             time.sleep(1.5)   # breathing room for Groq TPM limits
 
-    questions = _normalise_questions(all_raw, num_questions)
+    # Deduplicate before normalising: remove near-identical questions that arise
+    # when two topically similar chunks independently generate the same question.
+    deduped = _deduplicate_questions(all_raw)
+    questions = _normalise_questions(deduped, num_questions)
     logger.info(
-        "Q&A map-reduce complete: %d/%d questions from %d sampled chunks "
-        "(%d total doc chunks, %d chars)",
+        "Q&A map-reduce complete: %d/%d questions from %d diverse chunks "
+        "(%d total, %d chars) — %d duplicates removed",
         len(questions), num_questions, len(selected), total_chunks, len(text),
+        len(all_raw) - len(deduped),
     )
     return questions
 
@@ -967,28 +1056,29 @@ def summarize_text(text: str, request_id: str = "unknown") -> str:
         )
         return result.content
 
-    # ── Large document: map-reduce ─────────────────────────────────────────────
+    # ── Large document: map-reduce with diversity-aware chunk selection ────────
     chunks = _split_into_chunks(text, _CHUNK_CHARS, _CHUNK_OVERLAP)
     total_chunks = len(chunks)
 
-    # Sample evenly if there are more chunks than the cap
-    if total_chunks > _MAX_SUM_CHUNKS:
-        step = total_chunks / _MAX_SUM_CHUNKS
-        chunks = [chunks[int(i * step)] for i in range(_MAX_SUM_CHUNKS)]
+    # For summary we WANT all topics represented, so use diversity selection
+    # to avoid over-summarising the most common topic in the document.
+    n_sample = min(total_chunks, _MAX_SUM_CHUNKS)
+    selected_pairs = _select_diverse_chunks(chunks, n_sample)
+    selected_chunks = [c for _, c in selected_pairs]
 
-    n = len(chunks)
+    n = len(selected_chunks)
     logger.info(
-        "Summary map-reduce: %d chars / %d total chunks → processing %d chunks",
+        "Summary map-reduce: %d chars / %d total chunks → %d diverse chunks selected",
         len(text), total_chunks, n,
     )
 
-    # Map phase: short summary of each chunk
+    # Map phase: short summary of each selected chunk
     chunk_prompt = ChatPromptTemplate.from_messages([
         ("system", _CHUNK_SUM_SYSTEM),
         ("human",  _CHUNK_SUM_HUMAN),
     ])
     chunk_summaries: list[str] = []
-    for i, chunk in enumerate(chunks):
+    for i, chunk in enumerate(selected_chunks):
         try:
             res = call_llm_with_retry(
                 chain_input={"text": chunk, "n": i + 1, "total": n},

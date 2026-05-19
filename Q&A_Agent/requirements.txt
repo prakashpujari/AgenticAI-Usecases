@@ -17,6 +17,13 @@ langchain-google-genai>=2.0.0
 # full-text injection into LLM context window (no RAG/embeddings needed).
 # See src/generation/qa_generator.py generate_questions_from_text().
 
+# ── Diversity-based chunk selection (no embeddings — TF-IDF only) ─────────────
+# Used for large-doc map-reduce: select maximally topic-diverse chunks so the
+# LLM sees a balanced cross-section of the document rather than repeating the
+# most prominent topic.  sklearn is lightweight (<5 MB) vs sentence-transformers
+# (~500 MB) and needs no GPU.
+scikit-learn>=1.3.0
+
 # ── PDF extraction ────────────────────────────────────────────────────────────
 pypdf>=4.0.0
 
