@@ -9,7 +9,8 @@ import {
 } from 'react-simple-maps'
 
 const REFRESH_MS = 30_000
-const GEO_URL    = 'https://cdn.jsdelivr.net/npm/world-atlas@2/countries-110m.json'
+// Bundled locally (public/countries-110m.json) — no CDN dependency, always available
+const GEO_URL    = '/countries-110m.json'
 
 // ISO alpha-2 → ISO numeric (world-atlas uses geo.id = numeric string)
 const A2_TO_NUM = {
