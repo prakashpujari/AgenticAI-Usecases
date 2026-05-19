@@ -124,10 +124,14 @@ export default function JobStatus({ pipelineId }) {
       </div>
 
       {/* Queue Position */}
-      {job.status === 'queued' && job.queue_position !== null && (
-        <div className="mb-6 p-4 bg-yellow-50 border border-yellow-200 rounded-md">
+      {job.status === 'queued' && (
+        <div className="mb-6 p-4 bg-yellow-50 border border-yellow-200 rounded-md flex items-center gap-3">
+          <div className="animate-spin rounded-full h-4 w-4 border-b-2 border-yellow-600 flex-shrink-0"></div>
           <p className="text-sm text-yellow-800">
-            Position in queue: <strong>#{job.queue_position}</strong>
+            {job.queue_position != null && job.queue_position > 0
+              ? <>Waiting in queue &mdash; <strong>{job.queue_position}</strong> job{job.queue_position > 1 ? 's' : ''} ahead. Processing will start shortly.</>
+              : <>Your job is next &mdash; processing will start momentarily.</>
+            }
           </p>
         </div>
       )}
@@ -182,9 +186,22 @@ export default function JobStatus({ pipelineId }) {
 
       {/* Processing Indicator */}
       {job.status === 'processing' && (
-        <div className="flex items-center gap-2 text-blue-600">
-          <div className="animate-spin rounded-full h-4 w-4 border-b-2 border-blue-600"></div>
-          <p className="text-sm">Processing your document...</p>
+        <div className="p-4 bg-blue-50 border border-blue-200 rounded-md">
+          <div className="flex items-center gap-3 mb-2">
+            <div className="animate-spin rounded-full h-4 w-4 border-b-2 border-blue-600 flex-shrink-0"></div>
+            <p className="text-sm font-medium text-blue-800">Processing your document&hellip;</p>
+          </div>
+          {job.elapsed_seconds != null && (
+            <p className="text-xs text-blue-600 ml-7">
+              {job.elapsed_seconds < 60
+                ? `${job.elapsed_seconds}s elapsed`
+                : `${Math.floor(job.elapsed_seconds / 60)}m ${job.elapsed_seconds % 60}s elapsed`
+              }
+              {job.elapsed_seconds > 30
+                ? ' — large documents may take 1–2 minutes'
+                : ''}
+            </p>
+          )}
         </div>
       )}
     </div>

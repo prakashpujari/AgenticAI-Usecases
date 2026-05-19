@@ -203,6 +203,9 @@ _job_queue: Queue = Queue()
 _jobs_db: dict[str, dict[str, Any]] = {}
 _jobs_lock = threading.Lock()
 
+# How many jobs to process in parallel (2 balances throughput vs Render RAM)
+_WORKER_COUNT = int(os.getenv("WORKER_COUNT", "2"))
+
 
 # ── Database setup (simple SQLite) ────────────────────────────────────────────
 def _init_db() -> None:
@@ -557,6 +560,52 @@ def _file_sweeper_loop() -> None:
             logger.warning("File sweeper error: %s", exc)
 
 
+def _stuck_job_sweeper_loop() -> None:
+    """
+    Background thread: every 60 s scan PostgreSQL for jobs that have been in
+    'processing' or 'queued' state longer than _JOB_TIMEOUT_SECONDS and mark
+    them failed.
+
+    This catches jobs that crashed without updating their own status — e.g.
+    the child thread was killed by the OS, or the DB write in _execute_pipeline
+    failed after the pipeline itself completed.
+    """
+    while True:
+        time.sleep(60)
+        try:
+            from api.database import get_recent_jobs, update_job
+            from datetime import datetime, timezone, timedelta
+
+            cutoff = datetime.now(timezone.utc) - timedelta(seconds=_JOB_TIMEOUT_SECONDS)
+            stuck = get_recent_jobs(200)  # broad scan
+            for j in stuck:
+                if j.get("status") not in ("queued", "processing"):
+                    continue
+                # Check updated_at timestamp
+                updated_raw = j.get("updated_at") or j.get("created_at", "")
+                try:
+                    updated = datetime.fromisoformat(str(updated_raw))
+                    if not updated.tzinfo:
+                        updated = updated.replace(tzinfo=timezone.utc)
+                except Exception:
+                    continue
+                if updated < cutoff:
+                    pid = j["pipeline_id"]
+                    msg = (f"Job timed out — stuck in '{j['status']}' for "
+                           f">{_JOB_TIMEOUT_SECONDS}s without completing")
+                    logger.warning("Stuck-job sweeper: marking %s as failed (%s)", pid, msg)
+                    try:
+                        update_job(pid, status="failed", error_message=msg)
+                        with _jobs_lock:
+                            if pid in _jobs_db:
+                                _jobs_db[pid]["status"] = "failed"
+                                _jobs_db[pid]["error_message"] = msg
+                    except Exception as db_exc:
+                        logger.warning("Could not mark stuck job %s failed: %s", pid, db_exc)
+        except Exception as exc:
+            logger.warning("Stuck-job sweeper error: %s", exc)
+
+
 def _sanitise_error(exc: Exception) -> str:
     """Return a user-safe error message without model names or API internals."""
     msg = str(exc).lower()
@@ -639,7 +688,8 @@ class JobStatusResponse(BaseModel):
     result_markdown: str | None = None
     result_pdf_path: str | None = None
     error_message: str | None = None
-    queue_position: int | None = None
+    queue_position: int | None = None    # position in queue (queued jobs)
+    elapsed_seconds: int | None = None   # seconds since processing started
 
 
 class ErrorResponse(BaseModel):
@@ -801,10 +851,19 @@ async def get_job_status(request: Request, pipeline_id: str) -> JobStatusRespons
     if not job:
         raise HTTPException(status_code=404, detail="Job not found")
 
-    # Calculate queue position
+    # Queue position for queued jobs; elapsed seconds for processing jobs
     queue_position = None
+    elapsed_seconds = None
     if job["status"] == "queued":
-        queue_position = _job_queue.qsize()
+        queue_position = max(_job_queue.qsize(), 1)
+    elif job["status"] == "processing":
+        try:
+            updated = datetime.fromisoformat(str(job.get("updated_at", "")))
+            if not updated.tzinfo:
+                updated = updated.replace(tzinfo=timezone.utc)
+            elapsed_seconds = int((datetime.now(timezone.utc) - updated).total_seconds())
+        except Exception:
+            pass
 
     return JobStatusResponse(
         pipeline_id=pipeline_id,
@@ -817,6 +876,7 @@ async def get_job_status(request: Request, pipeline_id: str) -> JobStatusRespons
         result_pdf_path=job.get("result_pdf_path"),
         error_message=job.get("error_message"),
         queue_position=queue_position,
+        elapsed_seconds=elapsed_seconds,
     )
 
 
@@ -1014,14 +1074,26 @@ async def startup():
     except Exception as exc:
         logger.warning("Could not clean up stuck jobs: %s", exc)
 
-    _worker_thread = threading.Thread(target=_process_job_queue, daemon=True)
-    _worker_thread.start()
-    logger.info("Background worker thread started")
+    # Start N parallel worker threads so multiple jobs run concurrently
+    for i in range(_WORKER_COUNT):
+        t = threading.Thread(
+            target=_process_job_queue, daemon=True, name=f"job-worker-{i+1}"
+        )
+        t.start()
+    _worker_thread = t   # keep reference to last thread for shutdown join
+    logger.info("Started %d background worker thread(s)", _WORKER_COUNT)
 
     # Start upload file sweeper — deletes files older than FILE_EXPIRY_SECONDS
     sweeper = threading.Thread(target=_file_sweeper_loop, daemon=True, name="file-sweeper")
     sweeper.start()
     logger.info("File sweeper started (expiry=%ds)", FILE_EXPIRY_SECONDS)
+
+    # Start stuck-job sweeper — marks orphaned processing/queued jobs as failed
+    stuck_sweeper = threading.Thread(
+        target=_stuck_job_sweeper_loop, daemon=True, name="stuck-job-sweeper"
+    )
+    stuck_sweeper.start()
+    logger.info("Stuck-job sweeper started (timeout=%ds)", _JOB_TIMEOUT_SECONDS)
 
     # Start keep-alive pinger (no-op locally; active on Render when env var is set)
     pinger = threading.Thread(target=_keep_alive_pinger, daemon=True, name="keep-alive")
@@ -1032,7 +1104,8 @@ async def startup():
 async def shutdown():
     """Gracefully shutdown the worker thread."""
     logger.info("Shutting down Q&A Agent API server")
-    _job_queue.put(None)  # Sentinel: stop the worker
+    for _ in range(_WORKER_COUNT):  # one sentinel per worker thread
+        _job_queue.put(None)
     if _worker_thread:
         _worker_thread.join(timeout=5)
     logger.info("Shutdown complete")

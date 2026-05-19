@@ -1001,7 +1001,7 @@ def generate_questions_from_text(
             logger.warning("Q&A chunk %d/%d failed: %s", seq + 1, len(selected), exc)
 
         if seq < len(selected) - 1:
-            time.sleep(1.5)   # breathing room for Groq TPM limits
+            time.sleep(0.5)   # brief pause; retry chain handles rate limits
 
     # Deduplicate before normalising: remove near-identical questions that arise
     # when two topically similar chunks independently generate the same question.
@@ -1091,7 +1091,7 @@ def summarize_text(text: str, request_id: str = "unknown") -> str:
             chunk_summaries.append(f"**Section {i + 1}/{n}:** [section unavailable]")
 
         if i < n - 1:
-            time.sleep(1.0)   # respect Groq TPM limits
+            time.sleep(0.5)   # brief pause; retry chain handles rate limits
 
     # Reduce phase: synthesise chunk summaries into final structured summary
     combined = "\n\n".join(chunk_summaries)
