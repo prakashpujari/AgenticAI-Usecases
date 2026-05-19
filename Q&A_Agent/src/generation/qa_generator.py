@@ -602,9 +602,8 @@ def generate_questions(
         len(unique_docs),
         len(broad_queries),
         extra={
-            "unique_chunks":  len(unique_docs),
-            "query_count":    len(broad_queries),
-            "embedding_model": config.EMBEDDING_MODEL,
+            "unique_chunks": len(unique_docs),
+            "query_count":   len(broad_queries),
         },
     )
 

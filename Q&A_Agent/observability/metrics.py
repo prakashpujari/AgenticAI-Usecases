@@ -241,13 +241,10 @@ class PipelineMetrics:
         # Snapshot the key configuration values so the report is self-contained.
         # We include only the parameters that directly affect output quality/cost.
         self._pipeline_metadata["configuration"] = {
-            "groq_model":         config.GROQ_MODEL,
-            "embedding_model":    config.EMBEDDING_MODEL,
-            "chunk_size":         config.CHUNK_SIZE,
-            "chunk_overlap":      config.CHUNK_OVERLAP,
-            "num_questions":      config.NUM_QUESTIONS,
-            "top_k_retrieval":    config.TOP_K_RETRIEVAL,
-            "temperature":        config.TEMPERATURE,
+            "groq_model":      config.GROQ_MODEL,
+            "num_questions":   config.NUM_QUESTIONS,
+            "temperature":     config.TEMPERATURE,
+            "chunk_chars":     20_000,   # _CHUNK_CHARS in qa_generator (no RAG/embeddings)
         }
 
     def finish_pipeline(self, status: str = "success") -> None:

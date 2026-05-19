@@ -435,7 +435,11 @@ def _execute_pipeline(job: dict[str, Any]) -> None:
                     tags = ["pipeline", output_mode],
                 ):
                     result = _invoke_graph()
-                _ls.flush()
+                # flush() moved to Client in newer langsmith versions
+                try:
+                    _ls.Client().flush()
+                except Exception:
+                    pass
             except Exception as ls_exc:
                 logger.warning("LangSmith trace failed — running without tracing: %s", ls_exc)
                 result = _invoke_graph()
