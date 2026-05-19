@@ -165,17 +165,97 @@ def _load_xlsx(path: Path) -> str:
 
 
 def _extract_text_from_html(html_text: str) -> str:
-    """Best-effort HTML to readable plain text conversion."""
-    # Remove script/style blocks first
-    html_text = re.sub(r"<script[\\s\\S]*?</script>", " ", html_text, flags=re.IGNORECASE)
-    html_text = re.sub(r"<style[\\s\\S]*?</style>", " ", html_text, flags=re.IGNORECASE)
-    # Strip all remaining tags
+    """
+    Extract readable plain text from an HTML page.
+
+    Bugs fixed vs original:
+      • r"[\\\\s\\\\S]" used double-escaped backslashes in a raw string, so the
+        character class matched only literal '\\', 's', 'S' — scripts were NEVER
+        removed.  Correct pattern is r"[\\s\\S]" (single backslash = any char).
+      • r"\\\\s+" matched the literal 4-char string '\\s+' instead of whitespace.
+        Correct pattern is r"\\s+".
+
+    Also adds:
+      • Removal of noscript / template / svg / canvas / HTML comments (all
+        contain non-readable content that pollutes LLM context).
+      • SPA / authentication-wall detection: if the page contains very little
+        text but many JavaScript/auth keywords, raise a clear error so the user
+        knows to copy-paste or upload the content as a file.
+    """
+    # ── Remove non-content blocks ──────────────────────────────────────────────
+    # BUG FIX: use [\s\S] (single backslash) = any character including newlines.
+    # The old r"[\\s\\S]" was double-escaping, producing a class that only matched
+    # the literal characters '\', 's', 'S'.
+    for tag in ("script", "style", "noscript", "template", "svg", "canvas", "iframe"):
+        html_text = re.sub(
+            rf"<{tag}[\s\S]*?</{tag}>", " ", html_text, flags=re.IGNORECASE
+        )
+
+    # Remove HTML comments
+    html_text = re.sub(r"<!--[\s\S]*?-->", " ", html_text)
+
+    # Strip remaining tags
     text = re.sub(r"<[^>]+>", " ", html_text)
     text = unescape(text)
-    # Normalize whitespace
-    text = re.sub(r"\\s+", " ", text).strip()
+
+    # BUG FIX: normalize whitespace with r"\s+" (single backslash).
+    # The old r"\\s+" matched the literal 3-char string '\s+', not whitespace.
+    text = re.sub(r"\s+", " ", text).strip()
+
     if not text:
         raise ValueError("The webpage did not contain extractable text content.")
+
+    word_count = len(text.split())
+
+    # ── SPA / auth-wall detection ──────────────────────────────────────────────
+    # Scan the ORIGINAL raw HTML for JS/auth signals (before scripts were stripped)
+    # so we can detect SPA/login-wall pages even when the visible text is minimal.
+    _SPA_AUTH_SIGNALS = [
+        # Microsoft identity / OAuth
+        "microsoftonline", "msal.", "adal.", "oauth2", "openidconnect",
+        "window.__authconfig", "clientid", "tenantid",
+        # React/Angular/Vue SPA boilerplate
+        "webpackjsonp", "__webpack_require__", "regeneratorruntime",
+        "ng-version=", "data-reactroot", "vue-app",
+        # Generic JS-only-rendered page signals
+        "document.getelementbyid(\"root\")", "document.getelementbyid('root')",
+        "<div id=\"app\"", "<div id='app'", "<div id=\"root\"", "<div id='root'",
+    ]
+    raw_lower = html_text.lower()  # html_text still has scripts stripped but is lowercase-scannable
+    spa_hits = sum(1 for sig in _SPA_AUTH_SIGNALS if sig in raw_lower)
+
+    _JS_CODE_SIGNALS = [
+        "function(", "=>", ".prototype.", "module.exports",
+        "window.location", "window.onload", "document.queryselector",
+    ]
+    text_lower = text.lower()
+    code_hits = sum(1 for sig in _JS_CODE_SIGNALS if sig in text_lower)
+
+    _SPA_ERROR = (
+        "This webpage requires authentication or renders its content "
+        "dynamically via JavaScript — no readable text could be extracted.\n\n"
+        "Alternatives:\n"
+        "  • Copy the page text and upload it as a .txt file\n"
+        "  • Download the page as PDF and upload the PDF\n"
+        "  • Paste the article content directly into the URL / Source field"
+    )
+
+    # Case 1: very short visible text + SPA/auth signals in the HTML = login wall or SPA
+    if word_count < 50 and spa_hits >= 1:
+        raise ValueError(_SPA_ERROR)
+
+    # Case 2: JS code leaked into visible text (script-removal failed or inline handlers)
+    if code_hits >= 4:
+        raise ValueError(_SPA_ERROR)
+
+    # Case 3: almost empty page (any reason)
+    if word_count < 10:
+        raise ValueError(
+            "The webpage contained almost no readable text. "
+            "It may require login or load content dynamically. "
+            "Try uploading a .txt or PDF file instead."
+        )
+
     return text
 
 
