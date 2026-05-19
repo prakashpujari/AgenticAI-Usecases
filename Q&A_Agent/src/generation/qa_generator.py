@@ -675,11 +675,21 @@ def generate_questions(
 # _CHUNK_CHARS is kept at 20 000 (≈5K tokens) so every Groq model including
 # gemma2-9b-it (8K context) can handle any single chunk without a context error.
 
-_CHUNK_CHARS     = 20_000   # max chars per LLM chunk call
-_CHUNK_OVERLAP   = 300      # overlap to preserve context across chunk boundaries
-_SINGLE_PASS_CHARS = 60_000 # docs ≤ this are sent in a single call (3× old limit)
-_MAX_QA_CHUNKS   = 20       # max sample chunks used for Q&A  generation
-_MAX_SUM_CHUNKS  = 30       # max chunks processed in summary map phase
+_CHUNK_CHARS       = 20_000  # max chars per LLM chunk call
+_CHUNK_OVERLAP     = 300     # overlap to preserve context across chunk boundaries
+_SINGLE_PASS_CHARS = 60_000  # docs ≤ this are sent in a single call
+_MAX_QA_CHUNKS     = 20      # max sample chunks used for Q&A generation
+_MAX_SUM_CHUNKS    = 30      # max chunks processed in summary map phase
+
+# Hard memory cap — prevent OOM on very large uploads.
+# Render free tier: 512 MB RAM; at ~1 byte/char, 2 MB text leaves headroom
+# for 2 concurrent jobs + framework overhead.
+_MAX_DOC_CHARS     = 2_000_000  # 2 MB ≈ 1 000 pages
+
+# How many chunks to process in parallel within a single job.
+# Higher = faster; lower = kinder to rate limits and memory.
+# 3 is the sweet spot for Render free tier (0.5 CPU, 512 MB RAM).
+_MAX_PARALLEL_CHUNKS = int(__import__("os").getenv("MAX_PARALLEL_CHUNKS", "3"))
 
 
 def _smart_truncate(text: str, max_chars: int) -> str:
@@ -817,6 +827,38 @@ def _deduplicate_questions(
     return kept
 
 
+# ─── Parallel chunk executor ──────────────────────────────────────────────────
+#
+# All LLM calls are I/O-bound (HTTP to Groq/Gemini/HF), so running them in a
+# ThreadPoolExecutor achieves true parallelism despite the GIL.
+#
+# Design: each worker function accepts a single tuple (pickling-safe) so it
+# works on all platforms including those that use fork-unsafe spawn.
+
+def _call_chunk_qa(args: tuple) -> list[QuestionDict]:
+    """Thread-pool worker: one LLM call for Q&A chunk generation."""
+    chain_input, prompt, request_id = args
+    try:
+        result = call_llm_with_retry(chain_input, prompt, request_id)
+        raw = result.content.strip()
+        m = re.search(r"\[.*\]", raw, re.DOTALL)
+        return json.loads(m.group(0)) if m else []
+    except Exception as exc:
+        logger.warning("Q&A chunk call failed [%s]: %s", request_id, exc)
+        return []
+
+
+def _call_chunk_summary(args: tuple) -> str:
+    """Thread-pool worker: one LLM call for chunk summarisation."""
+    chain_input, prompt, request_id = args
+    try:
+        result = call_llm_with_retry(chain_input, prompt, request_id)
+        return result.content.strip()
+    except Exception as exc:
+        logger.warning("Summary chunk call failed [%s]: %s", request_id, exc)
+        return ""
+
+
 # ─── Prompt templates ──────────────────────────────────────────────────────────
 
 _SUMMARISE_SYSTEM = """\
@@ -945,7 +987,16 @@ def generate_questions_from_text(
 
     num_questions = num_questions or config.NUM_QUESTIONS
 
+    # ── Memory guard — prevent OOM on very large uploads ──────────────────────
+    if len(text) > _MAX_DOC_CHARS:
+        logger.warning(
+            "Document too large (%d chars) — capping at %d for Q&A",
+            len(text), _MAX_DOC_CHARS,
+        )
+        text = _smart_truncate(text, _MAX_DOC_CHARS)
+
     from langchain_core.prompts import ChatPromptTemplate
+    from concurrent.futures import ThreadPoolExecutor, as_completed
     prompt = ChatPromptTemplate.from_messages([
         ("system", _QA_DIRECT_SYSTEM),
         ("human",  _QA_DIRECT_HUMAN),
@@ -960,57 +1011,51 @@ def generate_questions_from_text(
         )
         questions = _normalise_questions(_parse_qa_response(result.content), num_questions)
         logger.info(
-            "Q&A single-pass: %d questions via %s (%.0f ms, %d chars in)",
+            "Q&A single-pass: %d questions via %s (%.0f ms, %d chars)",
             len(questions), result.model, result.total_latency_ms, len(text),
         )
         return questions
 
-    # ── Large document: map-reduce with diversity-aware chunk selection ────────
-    chunks = _split_into_chunks(text, _CHUNK_CHARS, _CHUNK_OVERLAP)
+    # ── Large document: parallel map-reduce with diversity-aware selection ────
+    chunks      = _split_into_chunks(text, _CHUNK_CHARS, _CHUNK_OVERLAP)
     total_chunks = len(chunks)
-
-    # Diversity selection: pick maximally topic-diverse chunks (TF-IDF farthest-point)
-    # so we cover different subjects rather than repeating the most prominent topic.
-    n_sample = min(total_chunks, _MAX_QA_CHUNKS)
-    selected = _select_diverse_chunks(chunks, n_sample)
-
-    # Questions per chunk — ceiling so we get at least num_questions total
+    n_sample    = min(total_chunks, _MAX_QA_CHUNKS)
+    selected    = _select_diverse_chunks(chunks, n_sample)
     qs_per_chunk = max(1, (num_questions + len(selected) - 1) // len(selected))
 
     logger.info(
-        "Q&A map-reduce: %d chars / %d total chunks → %d diverse chunks selected "
-        "(%d q/chunk, %d requested)",
-        len(text), total_chunks, len(selected), qs_per_chunk, num_questions,
+        "Q&A parallel map-reduce: %d chars / %d chunks → %d diverse selected "
+        "(%d q/chunk, %d workers, %d requested)",
+        len(text), total_chunks, len(selected),
+        qs_per_chunk, _MAX_PARALLEL_CHUNKS, num_questions,
     )
 
+    # Build work items — plain tuples so they survive thread dispatch
+    work = [
+        ({"text": chunk, "num_questions": qs_per_chunk},
+         prompt,
+         f"{request_id}-c{chunk_idx}")
+        for chunk_idx, chunk in selected
+    ]
+
     all_raw: list[QuestionDict] = []
-    for seq, (chunk_idx, chunk) in enumerate(selected):
-        try:
-            res = call_llm_with_retry(
-                chain_input={"text": chunk, "num_questions": qs_per_chunk},
-                prompt=prompt,
-                request_id=f"{request_id}-c{chunk_idx}",
-            )
-            chunk_qs = _parse_qa_response(res.content)
+    t_start = time.monotonic()
+    with ThreadPoolExecutor(
+        max_workers=_MAX_PARALLEL_CHUNKS,
+        thread_name_prefix="qa-chunk",
+    ) as pool:
+        futures = {pool.submit(_call_chunk_qa, w): i for i, w in enumerate(work)}
+        for fut in as_completed(futures):
+            chunk_qs = fut.result()   # already caught inside _call_chunk_qa
             all_raw.extend(chunk_qs)
-            logger.info(
-                "Q&A chunk %d/%d (doc-chunk %d): %d questions via %s",
-                seq + 1, len(selected), chunk_idx, len(chunk_qs), res.model,
-            )
-        except Exception as exc:
-            logger.warning("Q&A chunk %d/%d failed: %s", seq + 1, len(selected), exc)
 
-        if seq < len(selected) - 1:
-            time.sleep(0.5)   # brief pause; retry chain handles rate limits
-
-    # Deduplicate before normalising: remove near-identical questions that arise
-    # when two topically similar chunks independently generate the same question.
-    deduped = _deduplicate_questions(all_raw)
+    deduped   = _deduplicate_questions(all_raw)
     questions = _normalise_questions(deduped, num_questions)
     logger.info(
-        "Q&A map-reduce complete: %d/%d questions from %d diverse chunks "
-        "(%d total, %d chars) — %d duplicates removed",
-        len(questions), num_questions, len(selected), total_chunks, len(text),
+        "Q&A parallel map-reduce done: %d/%d questions from %d chunks "
+        "in %.1fs (%d duplicates removed)",
+        len(questions), num_questions, len(selected),
+        time.monotonic() - t_start,
         len(all_raw) - len(deduped),
     )
     return questions
@@ -1036,7 +1081,16 @@ def summarize_text(text: str, request_id: str = "unknown") -> str:
     if not config.GROQ_API_KEY:
         raise EnvironmentError("GROQ_API_KEY is not set.")
 
+    # ── Memory guard ──────────────────────────────────────────────────────────
+    if len(text) > _MAX_DOC_CHARS:
+        logger.warning(
+            "Document too large (%d chars) — capping at %d for summary",
+            len(text), _MAX_DOC_CHARS,
+        )
+        text = _smart_truncate(text, _MAX_DOC_CHARS)
+
     from langchain_core.prompts import ChatPromptTemplate
+    from concurrent.futures import ThreadPoolExecutor, as_completed
 
     # ── Small document: single pass ────────────────────────────────────────────
     if len(text) <= _SINGLE_PASS_CHARS:
@@ -1071,27 +1125,40 @@ def summarize_text(text: str, request_id: str = "unknown") -> str:
         len(text), total_chunks, n,
     )
 
-    # Map phase: short summary of each selected chunk
+    # Map phase: parallel short summaries of each selected chunk
     chunk_prompt = ChatPromptTemplate.from_messages([
         ("system", _CHUNK_SUM_SYSTEM),
         ("human",  _CHUNK_SUM_HUMAN),
     ])
-    chunk_summaries: list[str] = []
-    for i, chunk in enumerate(selected_chunks):
-        try:
-            res = call_llm_with_retry(
-                chain_input={"text": chunk, "n": i + 1, "total": n},
-                prompt=chunk_prompt,
-                request_id=f"{request_id}-s{i}",
-            )
-            chunk_summaries.append(f"**Section {i + 1}/{n}:**\n{res.content.strip()}")
-            logger.info("Summary chunk %d/%d complete via %s", i + 1, n, res.model)
-        except Exception as exc:
-            logger.warning("Summary chunk %d/%d failed: %s", i + 1, n, exc)
-            chunk_summaries.append(f"**Section {i + 1}/{n}:** [section unavailable]")
 
-        if i < n - 1:
-            time.sleep(0.5)   # brief pause; retry chain handles rate limits
+    # Build ordered work list (index preserved for section numbering)
+    sum_work = [
+        ({"text": chunk, "n": i + 1, "total": n}, chunk_prompt, f"{request_id}-s{i}")
+        for i, chunk in enumerate(selected_chunks)
+    ]
+
+    # Run all chunk summaries in parallel; preserve original order with a dict
+    raw_summaries: dict[int, str] = {}
+    t_map = time.monotonic()
+    with ThreadPoolExecutor(
+        max_workers=_MAX_PARALLEL_CHUNKS,
+        thread_name_prefix="sum-chunk",
+    ) as pool:
+        future_to_idx = {pool.submit(_call_chunk_summary, w): i
+                         for i, w in enumerate(sum_work)}
+        for fut in as_completed(future_to_idx):
+            i   = future_to_idx[fut]
+            txt = fut.result()
+            raw_summaries[i] = txt or "[section unavailable]"
+
+    chunk_summaries = [
+        f"**Section {i + 1}/{n}:**\n{raw_summaries.get(i, '[section unavailable]')}"
+        for i in range(n)
+    ]
+    logger.info(
+        "Summary map phase done: %d chunks in %.1fs",
+        n, time.monotonic() - t_map,
+    )
 
     # Reduce phase: synthesise chunk summaries into final structured summary
     combined = "\n\n".join(chunk_summaries)

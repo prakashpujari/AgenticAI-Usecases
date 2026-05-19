@@ -496,7 +496,7 @@ def _execute_pipeline(job: dict[str, Any]) -> None:
         duration_ms = (time.monotonic() - t_pipeline_start) * 1000
         logger.exception("Pipeline error in job %s: %s", pipeline_id, exc,
                          extra={"pipeline_id": pipeline_id})
-        user_msg = _sanitise_error(exc)
+        user_msg = _sanitise_error(exc, input_source=input_source)
         _update_job_status(pipeline_id, "failed", error_message=user_msg)
         update_job(pipeline_id, status="failed", error_message=user_msg)
         save_stage_timing(pipeline_id, "total_pipeline", duration_ms, "failed")
@@ -606,17 +606,32 @@ def _stuck_job_sweeper_loop() -> None:
             logger.warning("Stuck-job sweeper error: %s", exc)
 
 
-def _sanitise_error(exc: Exception) -> str:
+def _sanitise_error(exc: Exception, input_source: str = "") -> str:
     """Return a user-safe error message without model names or API internals."""
     msg = str(exc).lower()
+    is_youtube = (
+        "youtube.com" in input_source.lower()
+        or "youtu.be" in input_source.lower()
+    )
+
+    # YouTube / transcript errors — always show the user-friendly message first
+    if any(k in msg for k in ("transcript", "youtube", "caption")):
+        return str(exc)
+
+    # Rate limit / quota errors — give context about YouTube vs general
     if any(k in msg for k in ("rate limit", "quota", "429", "too many requests",
                                "temporarily unavailable", "ai service")):
+        if is_youtube:
+            return (
+                "The transcript was fetched but the AI service is temporarily "
+                "unavailable due to high demand. Please try again in a few minutes."
+            )
         return ("The AI service is temporarily unavailable due to high demand. "
                 "Please try again in a few minutes.")
-    if any(k in msg for k in ("transcript", "youtube", "caption")):
-        return str(exc)   # YouTube errors are already user-friendly
+
     if any(k in msg for k in ("file not found", "no extractable", "empty")):
         return str(exc)
+
     # Generic fallback — omit technical details
     return "An error occurred while processing your request. Please try again."
 
