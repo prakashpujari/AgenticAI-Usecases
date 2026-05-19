@@ -1021,20 +1021,81 @@ def _content_type_to_suffix(content_type: str) -> str:
 
 def _load_from_url(url: str) -> str:
     """Download a URL to a temp file, then load it with the appropriate handler."""
+    from urllib.error import HTTPError, URLError
+
     parsed = urlparse(url)
     host = parsed.netloc.lower()
 
     if "youtube.com" in host or "youtu.be" in host:
         return _load_youtube_transcript(url)
 
+    # Detect URLs that require authentication or are known to be inaccessible
+    _AUTH_DOMAINS = (
+        "onedrive.live.com", "sharepoint.com", "teams.microsoft.com",
+        "drive.google.com", "docs.google.com",
+        "dropbox.com", "box.com", "icloud.com",
+        "confluence.", "jira.", "notion.so",
+    )
+    if any(d in host for d in _AUTH_DOMAINS):
+        raise ValueError(
+            f"'{host}' requires login and cannot be read directly by the app.\n\n"
+            "To use content from this URL:\n"
+            "  • Download or export the file (PDF, Word, etc.) and upload it\n"
+            "  • Copy the text and paste it as a .txt file\n"
+            "  • Use File → Export in the app (OneDrive / Google Docs / Notion)"
+        )
+
     logger.info("Downloading document from URL: %s", url)
     req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"})
-    with urllib.request.urlopen(req, timeout=30) as resp:  # noqa: S310
-        content_type = resp.headers.get("Content-Type", "")
-        # Infer extension: prefer URL path, fall back to Content-Type
-        url_path_suffix = Path(urlparse(url).path).suffix.lower()
-        suffix = url_path_suffix or _content_type_to_suffix(content_type) or ".txt"
-        data = resp.read()
+
+    # Friendly HTTP error messages — urllib raises HTTPError for 4xx/5xx
+    _HTTP_MESSAGES = {
+        400: "Bad request (400). The URL appears to be malformed or invalid.",
+        401: "Access denied (401 Unauthorized). This URL requires a login.",
+        403: (
+            "Access forbidden (403). This page is restricted and cannot be fetched "
+            "by the app. If it's a cloud document (OneDrive, Google Drive, Dropbox), "
+            "download or export the file and upload it directly."
+        ),
+        404: "Page not found (404). The URL does not exist or has been removed.",
+        429: "Too many requests (429). Please wait a moment and try again.",
+        500: "Server error (500). The website is temporarily unavailable.",
+        503: "Service unavailable (503). The website is temporarily down.",
+    }
+    try:
+        with urllib.request.urlopen(req, timeout=30) as resp:  # noqa: S310
+            content_type = resp.headers.get("Content-Type", "")
+            url_path_suffix = Path(urlparse(url).path).suffix.lower()
+            suffix = url_path_suffix or _content_type_to_suffix(content_type) or ".txt"
+            data = resp.read()
+    except HTTPError as exc:
+        friendly = _HTTP_MESSAGES.get(
+            exc.code,
+            f"HTTP {exc.code} error fetching the URL. "
+            "Try downloading the file and uploading it directly.",
+        )
+        raise ValueError(friendly) from exc
+    except URLError as exc:
+        reason = str(exc.reason).lower()
+        if "ssl" in reason or "certificate" in reason:
+            raise ValueError(
+                "SSL/certificate error: the site uses an untrusted certificate. "
+                "Try downloading the file and uploading it."
+            ) from exc
+        if "timed out" in reason or "timeout" in reason:
+            raise ValueError(
+                "The URL took too long to respond (timeout). "
+                "Check the address and try again."
+            ) from exc
+        if any(k in reason for k in ("name or service", "nodename", "getaddrinfo")):
+            raise ValueError(
+                f"Could not reach '{host}' — the domain could not be resolved. "
+                "Check the URL spelling and your network connection."
+            ) from exc
+        raise ValueError(
+            f"Could not connect to '{host}': {exc.reason}. "
+            "Check the URL and try again."
+        ) from exc
 
     # If the URL is an HTML webpage, extract visible text directly.
     if content_type.lower().startswith("text/html") or suffix in {"", ".html", ".htm"}:

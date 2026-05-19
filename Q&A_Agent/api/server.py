@@ -629,6 +629,18 @@ def _sanitise_error(exc: Exception, input_source: str = "") -> str:
         return ("The AI service is temporarily unavailable due to high demand. "
                 "Please try again in a few minutes.")
 
+    # URL / HTTP / network access errors — already user-friendly from document_loader
+    if any(k in msg for k in (
+        "access denied", "access forbidden", "http 4", "http 5",
+        "not found (404", "forbidden (403", "unauthorized (401",
+        "could not reach", "could not connect", "timed out",
+        "ssl/certificate", "domain could not be resolved",
+        "requires login", "requires authentication",
+        "webpage requires", "dynamically via javascript",
+        "download or export",
+    )):
+        return str(exc)
+
     if any(k in msg for k in ("file not found", "no extractable", "empty")):
         return str(exc)
 

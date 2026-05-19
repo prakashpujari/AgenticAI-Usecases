@@ -953,7 +953,7 @@ export default function Dashboard() {
   const [error,       setError]       = useState(null)
   const [lastSync,    setLastSync]    = useState(null)
   const [showAllJobs, setShowAllJobs] = useState(false)
-  const [activeTab,   setActiveTab]   = useState('overview')  // overview | analytics | files
+  const [activeTab,   setActiveTab]   = useState('overview')  // overview | analytics
 
   const fetchAll = useCallback(async () => {
     try {
@@ -995,7 +995,6 @@ export default function Dashboard() {
   const TABS = [
     { id: 'overview',   label: '📊 Overview'  },
     { id: 'analytics',  label: '🌍 Analytics' },
-    { id: 'files',      label: '📁 Files'     },
   ]
 
   return (
@@ -1217,9 +1216,6 @@ export default function Dashboard() {
 
       {/* ── ANALYTICS TAB ── */}
       {activeTab === 'analytics' && <AnalyticsSection />}
-
-      {/* ── FILES TAB ── */}
-      {activeTab === 'files' && <FilesSection onDeleted={fetchAll} />}
     </div>
   )
 }
