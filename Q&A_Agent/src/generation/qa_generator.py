@@ -99,9 +99,23 @@ _RETRYABLE_SIGNALS = (
     "overloaded", "connection", "too many requests", "429",
 )
 
+# Signals that mean the request itself is permanently wrong for this model —
+# switching to the next provider immediately is the right action (no retry).
+_HARD_FAIL_SIGNALS = (
+    "413",                  # request too large — model's context limit
+    "request too large",    # same, worded differently
+    "decommissioned",       # model removed from provider
+    "model_decommissioned", # Groq specific error code
+    "does not exist",       # model not found
+    "not found",
+)
+
 
 def _is_retryable(exc: Exception) -> bool:
     msg = f"{type(exc).__name__} {exc}".lower()
+    # Hard failures: switching provider is better than retrying
+    if any(sig in msg for sig in _HARD_FAIL_SIGNALS):
+        return False
     return any(sig in msg for sig in _RETRYABLE_SIGNALS)
 
 
@@ -184,11 +198,14 @@ def _providers() -> list[tuple[str, str, callable]]:
     serving. Putting Groq first cuts LLM latency from ~3 s to ~0.6 s.
 
       1. Groq llama-3.3-70b-versatile  — PRIMARY: best quality at Groq speed
-      2. Groq llama-3.1-8b-instant     — FALLBACK 1: 3× faster, 3× higher quota
-      3. Groq gemma2-9b-it             — FALLBACK 2: independent quota bucket
-      4. Google Gemini                 — FALLBACK 3: quality net (slower GPU)
-      5. Groq llama-3.2-3b-preview     — FALLBACK 4: emergency, near-zero latency
-      6. HuggingFace                   — LAST RESORT: high latency, unreliable
+      2. Groq llama-3.1-8b-instant     — FALLBACK 1: faster, independent quota
+      3. Groq llama3-8b-8192           — FALLBACK 2: legacy 8B, different quota pool
+      4. Google Gemini 2.5 Flash       — FALLBACK 3: 1M context, 250K TPM
+      5. HuggingFace                   — LAST RESORT: high latency, unreliable
+
+    NOTE: gemma2-9b-it and llama-3.2-3b-preview were DECOMMISSIONED by Groq
+    and removed from this list. Always verify active models at:
+    https://console.groq.com/docs/deprecations
 
     Each Groq model has an INDEPENDENT daily/per-minute quota, so rotating
     through them maximises capacity before reaching slower external providers.
@@ -196,12 +213,10 @@ def _providers() -> list[tuple[str, str, callable]]:
     providers = []
 
     # ── 1–3. Groq models — fastest inference (Groq LPU hardware) ─────────────
-    # Order: quality-first (70B), then high-quota fast (8B), then spare bucket
     groq_models = [
-        config.GROQ_MODEL,           # llama-3.3-70b-versatile  (~600ms, 6k TPM)
-        config.GROQ_FALLBACK_MODEL,  # llama-3.1-8b-instant     (~150ms, 20k TPM)
-        "gemma2-9b-it",              # spare quota bucket        (~350ms, 15k TPM)
-        "llama-3.2-3b-preview",      # emergency ultra-fast      (~100ms,  7k TPM)
+        config.GROQ_MODEL,           # llama-3.3-70b-versatile  (6K TPM free tier)
+        config.GROQ_FALLBACK_MODEL,  # llama-3.1-8b-instant     (independent quota)
+        "llama3-8b-8192",            # legacy 8B — different quota pool, 8K context
     ]
     seen: set[str] = set()
     for m in groq_models:
@@ -675,9 +690,16 @@ def generate_questions(
 # _CHUNK_CHARS is kept at 20 000 (≈5K tokens) so every Groq model including
 # gemma2-9b-it (8K context) can handle any single chunk without a context error.
 
-_CHUNK_CHARS       = 20_000  # max chars per LLM chunk call
+_CHUNK_CHARS       = 20_000  # max chars per LLM chunk call (≈5K tokens)
 _CHUNK_OVERLAP     = 300     # overlap to preserve context across chunk boundaries
-_SINGLE_PASS_CHARS = 60_000  # docs ≤ this are sent in a single call
+
+# Groq free-tier TPM = 6 000 tokens/min ≈ 24 000 chars/call (at 4 chars/token).
+# _SINGLE_PASS_CHARS must stay under this so a single call never exceeds the
+# per-minute token limit and triggers a 413 "Request too large" error.
+# Matching _CHUNK_CHARS means ALL paths (single-pass AND map-reduce) respect
+# the same per-call budget, so the fallback chain never hits a 413.
+_SINGLE_PASS_CHARS = 20_000  # same as chunk size — keeps every call under 6K TPM
+
 _MAX_QA_CHUNKS     = 20      # max sample chunks used for Q&A generation
 _MAX_SUM_CHUNKS    = 30      # max chunks processed in summary map phase
 
