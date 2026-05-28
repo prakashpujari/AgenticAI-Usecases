@@ -29,6 +29,9 @@ An enterprise-grade, multi-agent system that converts raw text (support tickets,
 
 The system has three tiers: a **React frontend**, a **FastAPI backend**, and a **LangGraph multi-agent pipeline** that coordinates all AI work. Four external services handle LLM inference, vector storage, ticket writing, and caching.
 
+<img width="1408" height="768" alt="Gemini_Generated_Image_uj70cfuj70cfuj70" src="https://github.com/user-attachments/assets/c0d0f2eb-cc31-412e-aa31-b6f54dcd4836" />
+
+
 ```mermaid
 graph TB
     subgraph Browser["🌐 Browser  (React + Vite  :5173)"]
