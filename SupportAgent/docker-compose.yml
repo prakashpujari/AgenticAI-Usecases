@@ -1,0 +1,131 @@
+version: '3.9'
+
+services:
+  # PostgreSQL Database
+  postgres:
+    image: postgres:16-alpine
+    container_name: aiops_postgres
+    environment:
+      POSTGRES_USER: aiops
+      POSTGRES_PASSWORD: aiops
+      POSTGRES_DB: aiops_db
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U aiops"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  # Redis Cache
+  redis:
+    image: redis:7-alpine
+    container_name: aiops_redis
+    ports:
+      - "6379:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  # Milvus Vector Database
+  milvus:
+    image: milvusdb/milvus:v2.3.6
+    container_name: aiops_milvus
+    environment:
+      COMMON_STORAGETYPE: local
+    ports:
+      - "19530:19530"
+      - "9091:9091"
+    volumes:
+      - milvus_data:/var/lib/milvus
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:9091/healthz"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  # Prometheus (Metrics)
+  prometheus:
+    image: prom/prometheus:latest
+    container_name: aiops_prometheus
+    ports:
+      - "9090:9090"
+    volumes:
+      - ./infrastructure/prometheus/prometheus.yml:/etc/prometheus/prometheus.yml
+      - prometheus_data:/prometheus
+    command:
+      - '--config.file=/etc/prometheus/prometheus.yml'
+      - '--storage.tsdb.path=/prometheus'
+
+  # Jaeger (Tracing)
+  jaeger:
+    image: jaegertracing/all-in-one:latest
+    container_name: aiops_jaeger
+    ports:
+      - "6831:6831/udp"
+      - "16686:16686"
+    environment:
+      COLLECTOR_ZIPKIN_HOST_PORT: ":9411"
+
+  # Backend API
+  backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    container_name: aiops_backend
+    ports:
+      - "8000:8000"
+    environment:
+      DATABASE_URL: postgresql+asyncpg://aiops:aiops@postgres:5432/aiops_db
+      REDIS_URL: redis://redis:6379
+      MILVUS_HOST: milvus
+      MILVUS_PORT: 19530
+      PROMETHEUS_URL: http://prometheus:9090
+      JAEGER_HOST: jaeger
+      JAEGER_PORT: 6831
+      ENVIRONMENT: development
+      LOG_LEVEL: INFO
+      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY}
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      milvus:
+        condition: service_healthy
+    volumes:
+      - ./backend:/app
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  # Frontend
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+    container_name: aiops_frontend
+    ports:
+      - "5173:5173"
+    environment:
+      VITE_API_URL: http://localhost:8000
+    volumes:
+      - ./frontend/src:/app/src
+    depends_on:
+      - backend
+
+volumes:
+  postgres_data:
+  redis_data:
+  milvus_data:
+  prometheus_data:
+
+networks:
+  default:
+    name: aiops_network
