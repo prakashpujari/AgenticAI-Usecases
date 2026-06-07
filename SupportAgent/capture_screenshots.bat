@@ -1,9 +1,10 @@
 @echo off
-REM AIOps Platform - Screenshot Capture Script (Windows)
-REM This script handles the screenshot capture workflow
-
 setlocal enabledelayedexpansion
+REM AIOps Platform - Screenshot Capture Script (Windows)
+REM Usage: .\capture_screenshots.bat (with .\)
+REM Or:    cmd /c capture_screenshots.bat
 
+cls
 echo.
 echo ╔════════════════════════════════════════════════════════════════╗
 echo ║   AIOps Platform - Automated Screenshot Capture (Windows)      ║
