@@ -165,9 +165,11 @@ app.add_middleware(RequestSizeLimitMiddleware)
 @app.exception_handler(Exception)
 async def _unhandled(request: Request, exc: Exception) -> JSONResponse:
     logger.error("Unhandled error: %s", exc, exc_info=True)
+    # In development, return actual error for debugging
+    error_detail = str(exc) if settings.environment != "production" else "Internal server error. Please check server logs."
     return JSONResponse(
         status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-        content={"detail": "Internal server error. Please check server logs."},
+        content={"detail": error_detail},
     )
 
 
