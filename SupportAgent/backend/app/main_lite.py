@@ -9,6 +9,13 @@ import logging
 from datetime import datetime
 import uuid
 import json
+import sys
+import os
+
+# Add parent directory to path for imports
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+
+from connectors.jira import JiraConnector
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -28,6 +35,9 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+# Initialize Jira connector
+jira_connector = JiraConnector()
 
 # In-memory storage for demo
 incidents_db = {}
@@ -96,11 +106,29 @@ async def create_incident(
         "business_impact": business_impact,
         "customer_impact": customer_impact,
         "detected_at": datetime.utcnow().isoformat(),
-        "updated_at": datetime.utcnow().isoformat()
+        "updated_at": datetime.utcnow().isoformat(),
+        "jira_ticket": None
     }
 
     incidents_db[incident_id] = incident
     logger.info(f"Incident created: {incident_number}")
+
+    # Create Jira ticket asynchronously
+    import asyncio
+    try:
+        jira_ticket = asyncio.create_task(
+            jira_connector.create_incident_ticket(
+                title=title,
+                description=description,
+                severity=severity,
+                affected_services=affected_services,
+                incident_id=incident_id
+            )
+        )
+        # Don't wait for it, just trigger it
+    except Exception as e:
+        logger.warning(f"Failed to create Jira ticket: {str(e)}")
+
     return incident
 
 # Get incident details
