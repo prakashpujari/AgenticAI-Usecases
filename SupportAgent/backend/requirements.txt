@@ -17,8 +17,8 @@ alembic==1.13.0
 psycopg2-binary==2.9.9
 
 # Vector DB & Search
-milvus==2.3.6
-pymilvus==2.3.7
+milvus==2.2.16
+pymilvus==2.2.16
 elasticsearch==8.11.0
 redis==5.0.1
 

@@ -1,0 +1,66 @@
+# Lightweight local development requirements
+# Excludes: TensorFlow, Prophet, Milvus (optional heavy deps)
+
+# Core Framework
+fastapi==0.104.1
+uvicorn==0.24.0
+pydantic==2.5.0
+pydantic-settings==2.1.0
+python-dotenv==1.0.0
+
+# Async & Concurrency
+aiohttp==3.9.1
+httpx==0.25.2
+asyncpg==0.29.0
+
+# Database
+sqlalchemy==2.0.23
+alembic==1.13.0
+psycopg2-binary==2.9.9
+
+# Search
+elasticsearch==8.11.0
+redis==5.0.1
+
+# LLM & Agents
+langchain==0.1.0
+langgraph==0.1.2
+anthropic==0.20.0
+langsmith==0.1.0
+
+# ML & Anomaly Detection (lightweight)
+scikit-learn==1.3.2
+numpy==1.26.2
+pandas==2.1.3
+statsmodels==0.14.0
+
+# Connectors & APIs
+requests==2.31.0
+splunk-sdk==1.7.4
+datadog==0.47.0
+
+# Observability
+opentelemetry-api==1.21.0
+opentelemetry-sdk==1.21.0
+python-json-logger==2.0.7
+
+# Security & Governance
+pydantic-core==2.14.1
+cryptography==41.0.7
+python-jose==3.3.0
+passlib==1.7.4
+python-multipart==0.0.6
+
+# Data Processing
+jinja2==3.1.2
+pyyaml==6.0.1
+
+# Testing
+pytest==7.4.3
+pytest-asyncio==0.21.1
+httpx==0.25.2
+
+# Utilities
+tenacity==8.2.3
+python-dateutil==2.8.2
+pytz==2023.3
