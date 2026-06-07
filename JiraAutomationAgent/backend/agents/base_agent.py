@@ -1,5 +1,6 @@
 """
 Base agent: async LLM caller with Redis prompt caching.
+Supports OpenAI or Groq based on LLM_PROVIDER setting.
 All specialised agents inherit from this class.
 """
 from __future__ import annotations
@@ -8,13 +9,20 @@ import hashlib
 import json
 import logging
 import time
-from typing import Optional
+from typing import Optional, Union
 
 from openai import AsyncOpenAI
 
 from ..config import settings
 from ..services.redis_service import redis_service
 from ..observability.tracer import log_cache_event, log_layer, log_layer_warn
+
+# Groq API (compatible with OpenAI SDK)
+try:
+    from groq import AsyncGroq
+    _GROQ_AVAILABLE = True
+except ImportError:
+    _GROQ_AVAILABLE = False
 
 # Wrap the OpenAI client with LangSmith instrumentation so every chat-
 # completion call appears as a child "llm" span in LangSmith, properly
@@ -30,19 +38,28 @@ logger = logging.getLogger(__name__)
 
 class BaseAgent:
     """
-    Wraps an OpenAI chat call with:
+    Wraps an LLM chat call with:
       - A fixed system prompt (enforcing role separation)
       - Redis prompt caching (key: prompt:{sha256[:32]})
       - JSON-mode response format
+      - Support for OpenAI or Groq (based on LLM_PROVIDER env var)
     """
 
     def __init__(self, name: str, system_prompt: str) -> None:
         self.name = name
         self.system_prompt = system_prompt
-        raw_client = AsyncOpenAI(api_key=settings.openai_api_key)
-        # Wrap with LangSmith so all completions appear as child spans.
-        # Falls back to the unwrapped client when langsmith is not installed.
-        self._client = _ls_wrap_openai(raw_client) if _LANGSMITH_WRAP_AVAILABLE else raw_client
+        self.provider = settings.llm_provider.lower()
+        self.model = settings.groq_model if self.provider == "groq" else settings.openai_model
+
+        if self.provider == "groq":
+            if not _GROQ_AVAILABLE:
+                raise ImportError("Groq library not installed. Install with: pip install groq")
+            self._client = AsyncGroq(api_key=settings.groq_api_key)
+            logger.info(f"[{self.name}] Using Groq ({self.model})")
+        else:
+            raw_client = AsyncOpenAI(api_key=settings.openai_api_key)
+            self._client = _ls_wrap_openai(raw_client) if _LANGSMITH_WRAP_AVAILABLE else raw_client
+            logger.info(f"[{self.name}] Using OpenAI ({self.model})")
 
     # ------------------------------------------------------------------
 
@@ -83,7 +100,7 @@ class BaseAgent:
                 log_cache_event("prompt", cache_key, hit=True)
                 log_layer("LLM", self.name,
                           cache="HIT",
-                          model=settings.openai_model,
+                          model=self.model,
                           prompt_chars=prompt_chars)
                 return cached
         log_cache_event("prompt", cache_key, hit=False)
@@ -91,7 +108,7 @@ class BaseAgent:
         # ── LLM call ──────────────────────────────────────────────────
         log_layer("LLM", self.name,
                   direction="→",
-                  model=settings.openai_model,
+                  model=self.model,
                   temp=temperature,
                   max_tokens=max_tokens,
                   prompt_chars=prompt_chars,
@@ -99,7 +116,7 @@ class BaseAgent:
 
         t0 = time.monotonic()
         response = await self._client.chat.completions.create(
-            model=settings.openai_model,
+            model=self.model,
             messages=messages,
             temperature=temperature,
             max_tokens=max_tokens,
@@ -113,7 +130,7 @@ class BaseAgent:
 
         log_layer("LLM", self.name,
                   direction="←",
-                  model=settings.openai_model,
+                  model=self.model,
                   tokens=f"{usage.total_tokens}({usage.prompt_tokens}p+{usage.completion_tokens}c)",
                   latency_s=f"{latency:.2f}",
                   finish=finish)

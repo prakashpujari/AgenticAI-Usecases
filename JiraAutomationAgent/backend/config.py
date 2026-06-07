@@ -22,12 +22,19 @@ class Settings(BaseSettings):
         extra="ignore",
     )
 
+    # ── LLM Provider (OpenAI or Groq) ────────────────────────────────────
+    llm_provider: str = Field("openai", description="LLM provider: 'openai' or 'groq'")
+
     # ── OpenAI ───────────────────────────────────────────────────────────
-    openai_api_key: str = Field(..., description="OpenAI API key")
+    openai_api_key: Optional[str] = Field(None, description="OpenAI API key")
     openai_model: str = Field("gpt-4o", description="Chat completion model")
     openai_embedding_model: str = Field(
         "text-embedding-3-small", description="Embedding model"
     )
+
+    # ── Groq ─────────────────────────────────────────────────────────────
+    groq_api_key: Optional[str] = Field(None, description="Groq API key")
+    groq_model: str = Field("mixtral-8x7b-32768", description="Groq model (e.g. mixtral-8x7b-32768)")
 
     # ── Pinecone ─────────────────────────────────────────────────────────
     pinecone_api_key: str = Field(..., description="Pinecone API key")

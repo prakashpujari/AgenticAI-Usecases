@@ -113,42 +113,51 @@ async def rbac_filter_node(state: JiraAgentState) -> Dict[str, Any]:
 
 
 async def dedupe_node(state: JiraAgentState) -> Dict[str, Any]:
-    """Check Pinecone + Redis for potential duplicate issues."""
+    """Check Pinecone + Redis for potential duplicate issues (optional)."""
     set_trace_id(state.get("trace_id", ""))
     input_text = state.get("normalized_input", "")
 
-    # Embeds the input and queries Pinecone for semantically similar issues.
-    # Results are hard-blocked at create_node — the reviewer only provides
-    # advisory feedback, the actual gate is code-level.
-    matches = await pinecone_memory_agent.check_duplicates(input_text)
-    if matches:
-        match_summary = "  ".join(
-            f"{m.get('jira_key','?')}(score={m.get('similarity_score',0):.3f})"
-            for m in matches[:5]
-        )
-        log_layer_warn("WORKFLOW", "dedupe",
-                       matches=len(matches),
-                       threshold=_settings.dedupe_threshold,
-                       top=f"[{match_summary}]",
-                       action="HARD_BLOCK")
-    else:
-        log_layer("WORKFLOW", "dedupe", matches=0, status="no_duplicates")
-    logger.info("[dedupe] %d potential duplicate(s) found", len(matches))
+    try:
+        # Embeds the input and queries Pinecone for semantically similar issues.
+        matches = await pinecone_memory_agent.check_duplicates(input_text)
+        if matches:
+            match_summary = "  ".join(
+                f"{m.get('jira_key','?')}(score={m.get('similarity_score',0):.3f})"
+                for m in matches[:5]
+            )
+            log_layer_warn("WORKFLOW", "dedupe",
+                           matches=len(matches),
+                           threshold=_settings.dedupe_threshold,
+                           top=f"[{match_summary}]",
+                           action="HARD_BLOCK")
+        else:
+            log_layer("WORKFLOW", "dedupe", matches=0, status="no_duplicates")
+        logger.info("[dedupe] %d potential duplicate(s) found", len(matches))
+    except Exception as e:
+        logger.warning("[dedupe] Vector search unavailable (embeddings error): %s. Skipping dedupe.", str(e))
+        log_layer_warn("WORKFLOW", "dedupe", status="skipped", reason="embeddings_unavailable")
+        matches = []
+
     return {"dedupe_matches": matches}
 
 
 async def retrieve_node(state: JiraAgentState) -> Dict[str, Any]:
-    """RAG retrieval: Pinecone → Redis cache → LLM reranking."""
+    """RAG retrieval: Pinecone → Redis cache → LLM reranking (optional)."""
     set_trace_id(state.get("trace_id", ""))
     query = state.get("normalized_input", "")
+    raw_results = []
+    reranked = []
+    formatted = ""
 
-    # Fetch up to 10 candidates from Pinecone (vector similarity);
-    # reranker then scores them by relevance and keeps the top 5.
-    # The final formatted string is injected into every LLM prompt as
-    # "existing similar issues for reference".
-    raw_results = await rag_retriever.retrieve(query, top_k=10)
-    reranked = await reranker.rerank(query, raw_results, top_k=5)
-    formatted = rag_retriever.format_context(reranked)
+    try:
+        # Fetch up to 10 candidates from Pinecone (vector similarity);
+        # reranker then scores them by relevance and keeps the top 5.
+        raw_results = await rag_retriever.retrieve(query, top_k=10)
+        reranked = await reranker.rerank(query, raw_results, top_k=5)
+        formatted = rag_retriever.format_context(reranked)
+    except Exception as e:
+        logger.warning("[retrieve] RAG unavailable (embeddings error): %s. Continuing without context.", str(e))
+        log_layer_warn("WORKFLOW", "retrieve", status="skipped", reason="embeddings_unavailable")
 
     if reranked:
         result_summary = "  ".join(

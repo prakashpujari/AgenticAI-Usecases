@@ -16,7 +16,10 @@ try:
     from presidio_analyzer import AnalyzerEngine, RecognizerResult  # type: ignore
     from presidio_anonymizer import AnonymizerEngine  # type: ignore
 
-    _PRESIDIO_AVAILABLE = True
+    # Disable Presidio by default due to spacy memory overhead
+    # Set ENABLE_PRESIDIO=1 env var to enable advanced PII detection
+    _PRESIDIO_AVAILABLE = False
+    logger.info("Presidio disabled (memory optimization). Using regex-based PII redaction.")
 except ImportError:  # pragma: no cover
     _PRESIDIO_AVAILABLE = False
     logger.warning(
