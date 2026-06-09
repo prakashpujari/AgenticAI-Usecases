@@ -6,18 +6,11 @@
 from __future__ import annotations
 
 import logging
+import os
 from pathlib import Path
 from typing import Any, TypedDict
 
 from langgraph.graph import END, START, StateGraph
-
-try:
-    from langsmith import traceable
-except ImportError:  # tracing optional at runtime
-    def traceable(**_kw):  # type: ignore[misc]
-        def _wrap(fn):
-            return fn
-        return _wrap
 
 from app.agents.api_design_agent import APIDesignAgent
 from app.agents.executive_reporting_agent import ExecutiveReportingAgent
@@ -30,6 +23,22 @@ from app.services.groq_client import GroqClient
 from app.services.munit_parser import MUnitReportParser
 
 logger = logging.getLogger(__name__)
+
+
+def _get_tracer():
+    """Return a LangChainTracer if langsmith is available + configured, else None."""
+    api_key = os.environ.get("LANGCHAIN_API_KEY") or os.environ.get("LANGSMITH_API_KEY")
+    if not api_key:
+        return None
+    try:
+        from langchain_core.tracers import LangChainTracer
+        project = os.environ.get("LANGCHAIN_PROJECT", "mule-ai-validation")
+        tracer = LangChainTracer(project_name=project)
+        logger.info("LangSmith tracer active project=%s", project)
+        return tracer
+    except Exception as exc:
+        logger.warning("LangSmith tracer init failed: %s", exc)
+        return None
 
 
 class GraphState(TypedDict, total=False):
@@ -100,10 +109,6 @@ def build_workflow():
     return graph.compile()
 
 
-@traceable(
-    name="MuleFramework Validation Pipeline",
-    tags=["mulesoft", "langgraph", "validation"],
-)
 def run_pipeline(
     munit_reports_dir: Path,
     raml_path: Path,
@@ -111,6 +116,9 @@ def run_pipeline(
     application: str = "calculator-api",
     runtime: str = "4.9",
 ) -> dict[str, Any]:
+    tracer = _get_tracer()
+    callbacks = [tracer] if tracer else []
+
     workflow = build_workflow()
     initial: GraphState = {
         "application": application,
@@ -129,6 +137,7 @@ def run_pipeline(
                 "runtime": runtime,
                 "munit_reports_dir": str(munit_reports_dir),
             },
+            "callbacks": callbacks,
         },
     )
     return {

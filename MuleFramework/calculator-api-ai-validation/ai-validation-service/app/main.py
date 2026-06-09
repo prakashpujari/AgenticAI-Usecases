@@ -24,16 +24,16 @@ configure_logging(settings.log_level)
 logger = logging.getLogger(__name__)
 
 # ── LangSmith tracing ──────────────────────────────────────────────────────
-# Must be set in os.environ *before* any langchain/langgraph import resolves
-# its tracer, so we do it here at module load time.
+# Ensure the API key is available under both env var names that langsmith
+# recognises, so LangChainTracer initialises correctly regardless of version.
 if settings.langchain_api_key:
-    os.environ.setdefault("LANGCHAIN_TRACING_V2", "true")
     os.environ.setdefault("LANGCHAIN_API_KEY", settings.langchain_api_key)
+    os.environ.setdefault("LANGSMITH_API_KEY", settings.langchain_api_key)
     os.environ.setdefault("LANGCHAIN_PROJECT", settings.langchain_project)
     os.environ.setdefault("LANGCHAIN_ENDPOINT", settings.langchain_endpoint)
-    logger.info("LangSmith tracing enabled project=%s", settings.langchain_project)
+    logger.info("LangSmith configured project=%s", settings.langchain_project)
 else:
-    logger.info("LangSmith tracing disabled (no LANGCHAIN_API_KEY)")
+    logger.info("LangSmith disabled (no LANGCHAIN_API_KEY)")
 
 app = FastAPI(
     title="calculator-api AI Validation Service",
