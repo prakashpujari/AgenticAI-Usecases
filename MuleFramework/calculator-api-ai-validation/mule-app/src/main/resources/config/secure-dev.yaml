@@ -1,0 +1,15 @@
+# NOTE: Values shown here are placeholders. Real deployments must encrypt these
+# with the Mule secure-properties tool and the runtime key, then commit only the
+# ciphertext form (![ENCRYPTED]).
+jwt:
+  shared:
+    secret: "REPLACE_WITH_ENCRYPTED_VALUE"
+
+oauth:
+  client:
+    id: "REPLACE_WITH_ENCRYPTED_VALUE"
+    secret: "REPLACE_WITH_ENCRYPTED_VALUE"
+
+api:
+  client:
+    secret: "REPLACE_WITH_ENCRYPTED_VALUE"

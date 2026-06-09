@@ -1,0 +1,41 @@
+<?xml version="1.0" encoding="utf-8"?>
+<Configuration status="WARN" name="calculator-api">
+
+    <Appenders>
+        <!-- JSON structured logging for console / aggregators (ELK, Splunk, Datadog) -->
+        <Console name="JSON_CONSOLE" target="SYSTEM_OUT">
+            <JsonTemplateLayout eventTemplateUri="classpath:LogstashJsonEventLayoutV1.json"/>
+        </Console>
+
+        <RollingFile name="JSON_FILE"
+                     fileName="${sys:mule.home}${sys:file.separator}logs${sys:file.separator}calculator-api.json.log"
+                     filePattern="${sys:mule.home}${sys:file.separator}logs${sys:file.separator}calculator-api-%d{yyyy-MM-dd}-%i.json.log.gz">
+            <JsonTemplateLayout eventTemplateUri="classpath:LogstashJsonEventLayoutV1.json"/>
+            <Policies>
+                <TimeBasedTriggeringPolicy interval="1"/>
+                <SizeBasedTriggeringPolicy size="50MB"/>
+            </Policies>
+            <DefaultRolloverStrategy max="20"/>
+        </RollingFile>
+
+        <!-- Human-readable for local dev -->
+        <Console name="CONSOLE" target="SYSTEM_OUT">
+            <PatternLayout pattern="%d{yyyy-MM-dd HH:mm:ss.SSS} %-5p [%t] [%X{correlationId}] %c{1}: %m%n"/>
+        </Console>
+    </Appenders>
+
+    <Loggers>
+        <AsyncLogger name="com.example.mule" level="INFO"/>
+        <AsyncLogger name="org.mule" level="WARN"/>
+        <AsyncLogger name="org.mule.runtime.core.internal.processor.LoggerMessageProcessor" level="INFO"/>
+        <AsyncLogger name="MULE_TRACE" level="INFO" additivity="false">
+            <AppenderRef ref="JSON_CONSOLE"/>
+            <AppenderRef ref="JSON_FILE"/>
+        </AsyncLogger>
+
+        <Root level="INFO">
+            <AppenderRef ref="JSON_CONSOLE"/>
+            <AppenderRef ref="JSON_FILE"/>
+        </Root>
+    </Loggers>
+</Configuration>

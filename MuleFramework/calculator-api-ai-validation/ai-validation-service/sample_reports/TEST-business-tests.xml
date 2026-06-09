@@ -1,0 +1,12 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<testsuite name="business-tests" tests="9" failures="0" errors="0" skipped="0" time="0.766">
+  <testcase classname="business-tests" name="divide-by-zero-raises-domain-error" time="0.084"/>
+  <testcase classname="business-tests" name="add-two-negative-numbers" time="0.073"/>
+  <testcase classname="business-tests" name="multiply-two-negative-numbers-yields-positive" time="0.080"/>
+  <testcase classname="business-tests" name="divide-negative-by-positive" time="0.088"/>
+  <testcase classname="business-tests" name="add-two-decimal-values" time="0.082"/>
+  <testcase classname="business-tests" name="multiply-decimals" time="0.090"/>
+  <testcase classname="business-tests" name="add-large-numbers" time="0.094"/>
+  <testcase classname="business-tests" name="multiply-large-numbers" time="0.085"/>
+  <testcase classname="business-tests" name="divide-with-precision" time="0.090"/>
+</testsuite>

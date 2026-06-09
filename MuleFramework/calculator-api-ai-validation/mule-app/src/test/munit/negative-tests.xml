@@ -1,0 +1,98 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<mule xmlns="http://www.mulesoft.org/schema/mule/core"
+      xmlns:doc="http://www.mulesoft.org/schema/mule/documentation"
+      xmlns:munit="http://www.mulesoft.org/schema/mule/munit"
+      xmlns:munit-tools="http://www.mulesoft.org/schema/mule/munit-tools"
+      xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+      xsi:schemaLocation="
+        http://www.mulesoft.org/schema/mule/core
+        http://www.mulesoft.org/schema/mule/core/current/mule.xsd
+        http://www.mulesoft.org/schema/mule/munit
+        http://www.mulesoft.org/schema/mule/munit/current/mule-munit.xsd
+        http://www.mulesoft.org/schema/mule/munit-tools
+        http://www.mulesoft.org/schema/mule/munit-tools/current/mule-munit-tools.xsd">
+
+    <munit:config name="negative-tests.xml"/>
+
+    <!-- ========================================== -->
+    <!-- MISSING / NULL FIELDS                      -->
+    <!-- ========================================== -->
+    <munit:test name="missing-num1-fails-validation"
+                expectedErrorType="APP:VALIDATION_ERROR">
+        <munit:behavior>
+            <set-payload value='#[output application/json --- {num2: 5}]'/>
+        </munit:behavior>
+        <munit:execution>
+            <flow-ref name="calculator-add-impl"/>
+        </munit:execution>
+        <munit:validation>
+            <munit-tools:assert-that expression="#[vars.errorCode]" is="#[MunitTools::equalTo('VALIDATION_ERROR')]"/>
+        </munit:validation>
+    </munit:test>
+
+    <munit:test name="missing-num2-fails-validation"
+                expectedErrorType="APP:VALIDATION_ERROR">
+        <munit:behavior>
+            <set-payload value='#[output application/json --- {num1: 5}]'/>
+        </munit:behavior>
+        <munit:execution>
+            <flow-ref name="calculator-subtract-impl"/>
+        </munit:execution>
+        <munit:validation>
+            <munit-tools:assert-that expression="#[vars.errorCode]" is="#[MunitTools::equalTo('VALIDATION_ERROR')]"/>
+        </munit:validation>
+    </munit:test>
+
+    <munit:test name="null-num1-fails-as-bad-request"
+                expectedErrorType="APP:VALIDATION_ERROR">
+        <munit:behavior>
+            <set-payload value='#[output application/json --- {num1: null, num2: 5}]'/>
+        </munit:behavior>
+        <munit:execution>
+            <flow-ref name="calculator-multiply-impl"/>
+        </munit:execution>
+        <munit:validation>
+            <munit-tools:assert-that expression="#[vars.errorCode]" is="#[MunitTools::equalTo('VALIDATION_ERROR')]"/>
+        </munit:validation>
+    </munit:test>
+
+    <munit:test name="invalid-datatype-string-num1-fails"
+                expectedErrorType="APP:BAD_REQUEST">
+        <munit:behavior>
+            <set-payload value='#[output application/json --- {num1: "abc", num2: 5}]'/>
+        </munit:behavior>
+        <munit:execution>
+            <flow-ref name="calculator-add-impl"/>
+        </munit:execution>
+        <munit:validation>
+            <munit-tools:assert-that expression="#[vars.errorCode]" is="#[MunitTools::equalTo('BAD_REQUEST')]"/>
+        </munit:validation>
+    </munit:test>
+
+    <munit:test name="invalid-datatype-boolean-num2-fails"
+                expectedErrorType="APP:BAD_REQUEST">
+        <munit:behavior>
+            <set-payload value='#[output application/json --- {num1: 5, num2: true}]'/>
+        </munit:behavior>
+        <munit:execution>
+            <flow-ref name="calculator-divide-impl"/>
+        </munit:execution>
+        <munit:validation>
+            <munit-tools:assert-that expression="#[vars.errorCode]" is="#[MunitTools::equalTo('BAD_REQUEST')]"/>
+        </munit:validation>
+    </munit:test>
+
+    <munit:test name="invalid-datatype-array-num1-fails"
+                expectedErrorType="APP:BAD_REQUEST">
+        <munit:behavior>
+            <set-payload value='#[output application/json --- {num1: [1,2,3], num2: 5}]'/>
+        </munit:behavior>
+        <munit:execution>
+            <flow-ref name="calculator-subtract-impl"/>
+        </munit:execution>
+        <munit:validation>
+            <munit-tools:assert-that expression="#[vars.errorCode]" is="#[MunitTools::equalTo('BAD_REQUEST')]"/>
+        </munit:validation>
+    </munit:test>
+
+</mule>

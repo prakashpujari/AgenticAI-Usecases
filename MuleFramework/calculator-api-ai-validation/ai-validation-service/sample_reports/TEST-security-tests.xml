@@ -1,0 +1,7 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<testsuite name="security-tests" tests="4" failures="0" errors="0" skipped="0" time="0.512">
+  <testcase classname="security-tests" name="invalid-jwt-rejected-as-unauthorized" time="0.130"/>
+  <testcase classname="security-tests" name="expired-jwt-rejected-as-unauthorized" time="0.122"/>
+  <testcase classname="security-tests" name="missing-client-id-rejected" time="0.131"/>
+  <testcase classname="security-tests" name="oversized-payload-blocked-by-threat-protection" time="0.129"/>
+</testsuite>

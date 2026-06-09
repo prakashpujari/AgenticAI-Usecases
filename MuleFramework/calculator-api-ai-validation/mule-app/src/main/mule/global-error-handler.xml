@@ -1,0 +1,143 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<mule xmlns="http://www.mulesoft.org/schema/mule/core"
+      xmlns:doc="http://www.mulesoft.org/schema/mule/documentation"
+      xmlns:ee="http://www.mulesoft.org/schema/mule/ee/core"
+      xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+      xsi:schemaLocation="
+        http://www.mulesoft.org/schema/mule/core
+        http://www.mulesoft.org/schema/mule/core/current/mule.xsd
+        http://www.mulesoft.org/schema/mule/ee/core
+        http://www.mulesoft.org/schema/mule/ee/core/current/mule-ee.xsd">
+
+    <!-- ========================================================== -->
+    <!-- GLOBAL ERROR HANDLER                                       -->
+    <!-- Produces the standard error contract:                      -->
+    <!--   { success, errorCode, message, correlationId }           -->
+    <!-- ========================================================== -->
+    <error-handler name="global-error-handler">
+
+        <!-- APIKit / RAML schema mismatch -->
+        <on-error-propagate type="APIKIT:BAD_REQUEST">
+            <set-variable variableName="httpStatus" value="400"/>
+            <set-variable variableName="errorCode" value="BAD_REQUEST"/>
+            <set-variable variableName="errorMessage" value="#[error.description default 'Bad request']"/>
+            <flow-ref name="observability-record-failure"/>
+            <ee:transform>
+                <ee:message>
+                    <ee:set-payload resource="dwl/error.dwl"/>
+                </ee:message>
+            </ee:transform>
+        </on-error-propagate>
+
+        <on-error-propagate type="APIKIT:NOT_FOUND">
+            <set-variable variableName="httpStatus" value="404"/>
+            <set-variable variableName="errorCode" value="NOT_FOUND"/>
+            <set-variable variableName="errorMessage" value="Resource not found"/>
+            <flow-ref name="observability-record-failure"/>
+            <ee:transform>
+                <ee:message>
+                    <ee:set-payload resource="dwl/error.dwl"/>
+                </ee:message>
+            </ee:transform>
+        </on-error-propagate>
+
+        <on-error-propagate type="APIKIT:METHOD_NOT_ALLOWED">
+            <set-variable variableName="httpStatus" value="405"/>
+            <set-variable variableName="errorCode" value="METHOD_NOT_ALLOWED"/>
+            <set-variable variableName="errorMessage" value="Method not allowed"/>
+            <flow-ref name="observability-record-failure"/>
+            <ee:transform>
+                <ee:message>
+                    <ee:set-payload resource="dwl/error.dwl"/>
+                </ee:message>
+            </ee:transform>
+        </on-error-propagate>
+
+        <!-- Domain validation errors -->
+        <on-error-propagate type="APP:VALIDATION_ERROR">
+            <set-variable variableName="httpStatus" value="422"/>
+            <set-variable variableName="errorCode" value="VALIDATION_ERROR"/>
+            <flow-ref name="observability-record-failure"/>
+            <ee:transform>
+                <ee:message>
+                    <ee:set-payload resource="dwl/error.dwl"/>
+                </ee:message>
+            </ee:transform>
+        </on-error-propagate>
+
+        <on-error-propagate type="APP:BAD_REQUEST">
+            <set-variable variableName="httpStatus" value="400"/>
+            <set-variable variableName="errorCode" value="BAD_REQUEST"/>
+            <flow-ref name="observability-record-failure"/>
+            <ee:transform>
+                <ee:message>
+                    <ee:set-payload resource="dwl/error.dwl"/>
+                </ee:message>
+            </ee:transform>
+        </on-error-propagate>
+
+        <on-error-propagate type="APP:DIVIDE_BY_ZERO">
+            <set-variable variableName="httpStatus" value="422"/>
+            <set-variable variableName="errorCode" value="DIVIDE_BY_ZERO"/>
+            <set-variable variableName="errorMessage" value="Cannot divide by zero"/>
+            <flow-ref name="observability-record-failure"/>
+            <ee:transform>
+                <ee:message>
+                    <ee:set-payload resource="dwl/error.dwl"/>
+                </ee:message>
+            </ee:transform>
+        </on-error-propagate>
+
+        <!-- Security errors -->
+        <on-error-propagate type="APP:UNAUTHORIZED, HTTP:UNAUTHORIZED, JWT:INVALID_TOKEN, JWT:EXPIRED_TOKEN, CLIENT-ID-ENFORCEMENT:INVALID_CLIENT">
+            <set-variable variableName="httpStatus" value="401"/>
+            <set-variable variableName="errorCode" value="UNAUTHORIZED"/>
+            <set-variable variableName="errorMessage" value="#[error.description default 'Unauthorized']"/>
+            <flow-ref name="observability-record-failure"/>
+            <ee:transform>
+                <ee:message>
+                    <ee:set-payload resource="dwl/error.dwl"/>
+                </ee:message>
+            </ee:transform>
+        </on-error-propagate>
+
+        <on-error-propagate type="APP:RATE_LIMIT_EXCEEDED">
+            <set-variable variableName="httpStatus" value="429"/>
+            <set-variable variableName="errorCode" value="RATE_LIMIT_EXCEEDED"/>
+            <set-variable variableName="errorMessage" value="Rate limit exceeded"/>
+            <flow-ref name="observability-record-failure"/>
+            <ee:transform>
+                <ee:message>
+                    <ee:set-payload resource="dwl/error.dwl"/>
+                </ee:message>
+            </ee:transform>
+        </on-error-propagate>
+
+        <on-error-propagate type="JSON-THREAT:THREAT_DETECTED">
+            <set-variable variableName="httpStatus" value="400"/>
+            <set-variable variableName="errorCode" value="JSON_THREAT_DETECTED"/>
+            <set-variable variableName="errorMessage" value="Malicious JSON payload detected"/>
+            <flow-ref name="observability-record-failure"/>
+            <ee:transform>
+                <ee:message>
+                    <ee:set-payload resource="dwl/error.dwl"/>
+                </ee:message>
+            </ee:transform>
+        </on-error-propagate>
+
+        <!-- Catch-all -->
+        <on-error-propagate type="ANY">
+            <set-variable variableName="httpStatus" value="500"/>
+            <set-variable variableName="errorCode" value="INTERNAL_SERVER_ERROR"/>
+            <set-variable variableName="errorMessage" value="#[error.description default 'An unexpected error occurred']"/>
+            <flow-ref name="observability-record-failure"/>
+            <ee:transform>
+                <ee:message>
+                    <ee:set-payload resource="dwl/error.dwl"/>
+                </ee:message>
+            </ee:transform>
+        </on-error-propagate>
+
+    </error-handler>
+
+</mule>

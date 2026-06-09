@@ -1,0 +1,122 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<mule xmlns="http://www.mulesoft.org/schema/mule/core"
+      xmlns:doc="http://www.mulesoft.org/schema/mule/documentation"
+      xmlns:munit="http://www.mulesoft.org/schema/mule/munit"
+      xmlns:munit-tools="http://www.mulesoft.org/schema/mule/munit-tools"
+      xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+      xsi:schemaLocation="
+        http://www.mulesoft.org/schema/mule/core
+        http://www.mulesoft.org/schema/mule/core/current/mule.xsd
+        http://www.mulesoft.org/schema/mule/munit
+        http://www.mulesoft.org/schema/mule/munit/current/mule-munit.xsd
+        http://www.mulesoft.org/schema/mule/munit-tools
+        http://www.mulesoft.org/schema/mule/munit-tools/current/mule-munit-tools.xsd">
+
+    <munit:config name="security-tests.xml"/>
+
+    <!-- =========================================================== -->
+    <!-- INVALID JWT                                                 -->
+    <!-- =========================================================== -->
+    <munit:test name="invalid-jwt-rejected-as-unauthorized"
+                expectedErrorType="JWT:INVALID_TOKEN">
+        <munit:behavior>
+            <munit-tools:mock-when processor="jwt-validation:validate">
+                <munit-tools:then-call>
+                    <flow-ref name="raise-jwt-invalid-error"/>
+                </munit-tools:then-call>
+            </munit-tools:mock-when>
+            <set-payload value='#[output application/json --- {num1: 1, num2: 2}]'/>
+        </munit:behavior>
+        <munit:execution>
+            <flow-ref name="security-enforce"/>
+        </munit:execution>
+        <munit:validation>
+            <munit-tools:assert-that expression="#[vars.errorCode default 'UNAUTHORIZED']"
+                                     is="#[MunitTools::equalTo('UNAUTHORIZED')]"/>
+        </munit:validation>
+    </munit:test>
+
+    <!-- =========================================================== -->
+    <!-- EXPIRED JWT                                                 -->
+    <!-- =========================================================== -->
+    <munit:test name="expired-jwt-rejected-as-unauthorized"
+                expectedErrorType="JWT:EXPIRED_TOKEN">
+        <munit:behavior>
+            <munit-tools:mock-when processor="jwt-validation:validate">
+                <munit-tools:then-call>
+                    <flow-ref name="raise-jwt-expired-error"/>
+                </munit-tools:then-call>
+            </munit-tools:mock-when>
+            <set-payload value='#[output application/json --- {num1: 1, num2: 2}]'/>
+        </munit:behavior>
+        <munit:execution>
+            <flow-ref name="security-enforce"/>
+        </munit:execution>
+        <munit:validation>
+            <munit-tools:assert-that expression="#[vars.errorCode default 'UNAUTHORIZED']"
+                                     is="#[MunitTools::equalTo('UNAUTHORIZED')]"/>
+        </munit:validation>
+    </munit:test>
+
+    <!-- =========================================================== -->
+    <!-- MISSING CLIENT ID                                           -->
+    <!-- =========================================================== -->
+    <munit:test name="missing-client-id-rejected"
+                expectedErrorType="CLIENT-ID-ENFORCEMENT:INVALID_CLIENT">
+        <munit:behavior>
+            <munit-tools:mock-when processor="client-id-enforcement:validate-client">
+                <munit-tools:then-call>
+                    <flow-ref name="raise-client-id-invalid"/>
+                </munit-tools:then-call>
+            </munit-tools:mock-when>
+            <set-payload value='#[output application/json --- {num1: 1, num2: 2}]'/>
+        </munit:behavior>
+        <munit:execution>
+            <flow-ref name="security-enforce"/>
+        </munit:execution>
+        <munit:validation>
+            <munit-tools:assert-that expression="#[vars.errorCode default 'UNAUTHORIZED']"
+                                     is="#[MunitTools::equalTo('UNAUTHORIZED')]"/>
+        </munit:validation>
+    </munit:test>
+
+    <!-- =========================================================== -->
+    <!-- JSON THREAT PROTECTION                                       -->
+    <!-- =========================================================== -->
+    <munit:test name="oversized-payload-blocked-by-threat-protection"
+                expectedErrorType="JSON-THREAT:THREAT_DETECTED">
+        <munit:behavior>
+            <ee:transform xmlns:ee="http://www.mulesoft.org/schema/mule/ee/core">
+                <ee:message>
+                    <ee:set-payload><![CDATA[%dw 2.0
+output application/json
+---
+{
+  blob: (1 to 5000) reduce ((it, acc = "") -> acc ++ "AAAAAAAAAA")
+}]]></ee:set-payload>
+                </ee:message>
+            </ee:transform>
+        </munit:behavior>
+        <munit:execution>
+            <flow-ref name="json-threat-protection"/>
+        </munit:execution>
+        <munit:validation>
+            <munit-tools:assert-that expression="#[vars.threatScan.threatDetected]"
+                                     is="#[MunitTools::equalTo(true)]"/>
+        </munit:validation>
+    </munit:test>
+
+    <!-- =========================================================== -->
+    <!-- HELPER FLOWS USED BY MOCK CALLBACKS                          -->
+    <!-- =========================================================== -->
+    <flow name="raise-jwt-invalid-error">
+        <raise-error type="JWT:INVALID_TOKEN" description="Invalid JWT"/>
+    </flow>
+    <flow name="raise-jwt-expired-error">
+        <raise-error type="JWT:EXPIRED_TOKEN" description="Expired JWT"/>
+    </flow>
+    <flow name="raise-client-id-invalid">
+        <raise-error type="CLIENT-ID-ENFORCEMENT:INVALID_CLIENT" description="Missing client_id header"/>
+    </flow>
+
+</mule>

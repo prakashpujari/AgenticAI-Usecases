@@ -1,0 +1,129 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<mule xmlns="http://www.mulesoft.org/schema/mule/core"
+      xmlns:doc="http://www.mulesoft.org/schema/mule/documentation"
+      xmlns:munit="http://www.mulesoft.org/schema/mule/munit"
+      xmlns:munit-tools="http://www.mulesoft.org/schema/mule/munit-tools"
+      xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+      xsi:schemaLocation="
+        http://www.mulesoft.org/schema/mule/core
+        http://www.mulesoft.org/schema/mule/core/current/mule.xsd
+        http://www.mulesoft.org/schema/mule/munit
+        http://www.mulesoft.org/schema/mule/munit/current/mule-munit.xsd
+        http://www.mulesoft.org/schema/mule/munit-tools
+        http://www.mulesoft.org/schema/mule/munit-tools/current/mule-munit-tools.xsd">
+
+    <munit:config name="business-tests.xml"/>
+
+    <!-- ========================================== -->
+    <!-- DIVIDE BY ZERO                             -->
+    <!-- ========================================== -->
+    <munit:test name="divide-by-zero-raises-domain-error"
+                expectedErrorType="APP:DIVIDE_BY_ZERO">
+        <munit:behavior>
+            <set-payload value='#[output application/json --- {num1: 10, num2: 0}]'/>
+        </munit:behavior>
+        <munit:execution>
+            <flow-ref name="calculator-divide-impl"/>
+        </munit:execution>
+        <munit:validation>
+            <munit-tools:assert-that expression="#[vars.errorCode]"
+                                     is="#[MunitTools::equalTo('DIVIDE_BY_ZERO')]"/>
+            <munit-tools:assert-that expression="#[vars.errorMessage]"
+                                     is="#[MunitTools::equalTo('Cannot divide by zero')]"/>
+        </munit:validation>
+    </munit:test>
+
+    <!-- ========================================== -->
+    <!-- NEGATIVE NUMBERS                           -->
+    <!-- ========================================== -->
+    <munit:test name="add-two-negative-numbers">
+        <munit:behavior>
+            <set-payload value='#[output application/json --- {num1: -100, num2: -50}]'/>
+        </munit:behavior>
+        <munit:execution>
+            <flow-ref name="calculator-add-impl"/>
+        </munit:execution>
+        <munit:validation>
+            <munit-tools:assert-that expression="#[payload.result]" is="#[MunitTools::equalTo(-150)]"/>
+        </munit:validation>
+    </munit:test>
+
+    <munit:test name="multiply-two-negative-numbers-yields-positive">
+        <munit:behavior>
+            <set-payload value='#[output application/json --- {num1: -3, num2: -4}]'/>
+        </munit:behavior>
+        <munit:execution>
+            <flow-ref name="calculator-multiply-impl"/>
+        </munit:execution>
+        <munit:validation>
+            <munit-tools:assert-that expression="#[payload.result]" is="#[MunitTools::equalTo(12)]"/>
+        </munit:validation>
+    </munit:test>
+
+    <munit:test name="divide-negative-by-positive">
+        <munit:behavior>
+            <set-payload value='#[output application/json --- {num1: -20, num2: 4}]'/>
+        </munit:behavior>
+        <munit:execution>
+            <flow-ref name="calculator-divide-impl"/>
+        </munit:execution>
+        <munit:validation>
+            <munit-tools:assert-that expression="#[payload.result]" is="#[MunitTools::equalTo(-5)]"/>
+        </munit:validation>
+    </munit:test>
+
+    <!-- ========================================== -->
+    <!-- DECIMALS                                   -->
+    <!-- ========================================== -->
+    <munit:test name="add-two-decimal-values">
+        <munit:behavior>
+            <set-payload value='#[output application/json --- {num1: 1.5, num2: 2.25}]'/>
+        </munit:behavior>
+        <munit:execution>
+            <flow-ref name="calculator-add-impl"/>
+        </munit:execution>
+        <munit:validation>
+            <munit-tools:assert-that expression="#[payload.result]" is="#[MunitTools::equalTo(3.75)]"/>
+        </munit:validation>
+    </munit:test>
+
+    <munit:test name="multiply-decimals">
+        <munit:behavior>
+            <set-payload value='#[output application/json --- {num1: 0.5, num2: 0.5}]'/>
+        </munit:behavior>
+        <munit:execution>
+            <flow-ref name="calculator-multiply-impl"/>
+        </munit:execution>
+        <munit:validation>
+            <munit-tools:assert-that expression="#[payload.result]" is="#[MunitTools::equalTo(0.25)]"/>
+        </munit:validation>
+    </munit:test>
+
+    <!-- ========================================== -->
+    <!-- LARGE VALUES                               -->
+    <!-- ========================================== -->
+    <munit:test name="add-large-numbers">
+        <munit:behavior>
+            <set-payload value='#[output application/json --- {num1: 1000000000, num2: 2000000000}]'/>
+        </munit:behavior>
+        <munit:execution>
+            <flow-ref name="calculator-add-impl"/>
+        </munit:execution>
+        <munit:validation>
+            <munit-tools:assert-that expression="#[payload.result]" is="#[MunitTools::equalTo(3000000000)]"/>
+        </munit:validation>
+    </munit:test>
+
+    <munit:test name="multiply-large-numbers">
+        <munit:behavior>
+            <set-payload value='#[output application/json --- {num1: 100000, num2: 100000}]'/>
+        </munit:behavior>
+        <munit:execution>
+            <flow-ref name="calculator-multiply-impl"/>
+        </munit:execution>
+        <munit:validation>
+            <munit-tools:assert-that expression="#[payload.result]" is="#[MunitTools::equalTo(10000000000)]"/>
+        </munit:validation>
+    </munit:test>
+
+</mule>

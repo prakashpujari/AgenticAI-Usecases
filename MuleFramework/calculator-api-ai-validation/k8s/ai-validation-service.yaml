@@ -1,0 +1,170 @@
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: ai-validation-config
+  namespace: calculator-ai
+data:
+  APP_ENV: "prod"
+  LOG_LEVEL: "INFO"
+  GROQ_MODEL: "llama-3.3-70b-versatile"
+  MUNIT_REPORTS_DIR: "/data/munit-reports"
+---
+apiVersion: v1
+kind: Secret
+metadata:
+  name: ai-validation-secrets
+  namespace: calculator-ai
+type: Opaque
+stringData:
+  GROQ_API_KEY: "REPLACE_WITH_REAL_API_KEY_OR_USE_EXTERNAL_SECRETS"
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: ai-validation-service
+  namespace: calculator-ai
+  labels:
+    app: ai-validation-service
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: ai-validation-service
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxUnavailable: 0
+      maxSurge: 1
+  template:
+    metadata:
+      labels:
+        app: ai-validation-service
+      annotations:
+        prometheus.io/scrape: "true"
+        prometheus.io/port: "8000"
+        prometheus.io/path: "/health"
+    spec:
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 10001
+        fsGroup: 10001
+      containers:
+        - name: ai-validation
+          image: ghcr.io/example/ai-validation-service:1.0.0
+          imagePullPolicy: IfNotPresent
+          ports:
+            - name: http
+              containerPort: 8000
+          envFrom:
+            - configMapRef:
+                name: ai-validation-config
+            - secretRef:
+                name: ai-validation-secrets
+          resources:
+            requests:
+              cpu: "200m"
+              memory: "256Mi"
+            limits:
+              cpu: "1000m"
+              memory: "1Gi"
+          readinessProbe:
+            httpGet:
+              path: /ready
+              port: http
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: http
+            initialDelaySeconds: 15
+            periodSeconds: 20
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
+          volumeMounts:
+            - name: tmp
+              mountPath: /tmp
+            - name: munit-reports
+              mountPath: /data/munit-reports
+              readOnly: true
+      volumes:
+        - name: tmp
+          emptyDir: {}
+        - name: munit-reports
+          persistentVolumeClaim:
+            claimName: munit-reports-pvc
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: ai-validation-service
+  namespace: calculator-ai
+  labels:
+    app: ai-validation-service
+spec:
+  selector:
+    app: ai-validation-service
+  ports:
+    - name: http
+      port: 80
+      targetPort: 8000
+  type: ClusterIP
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: munit-reports-pvc
+  namespace: calculator-ai
+spec:
+  accessModes: ["ReadWriteMany"]
+  resources:
+    requests:
+      storage: 1Gi
+---
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: ai-validation-hpa
+  namespace: calculator-ai
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: ai-validation-service
+  minReplicas: 2
+  maxReplicas: 6
+  metrics:
+    - type: Resource
+      resource:
+        name: cpu
+        target:
+          type: Utilization
+          averageUtilization: 70
+---
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: ai-validation-ingress
+  namespace: calculator-ai
+  annotations:
+    nginx.ingress.kubernetes.io/ssl-redirect: "true"
+spec:
+  ingressClassName: nginx
+  tls:
+    - hosts: ["ai-validation.example.com"]
+      secretName: ai-validation-tls
+  rules:
+    - host: ai-validation.example.com
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: ai-validation-service
+                port:
+                  number: 80

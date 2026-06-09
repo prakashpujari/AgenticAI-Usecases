@@ -1,0 +1,18 @@
+env: "prod"
+
+http:
+  listener:
+    host: "0.0.0.0"
+    port: "8081"
+
+api:
+  baseUri: "https://calculator.example.com"
+
+logging:
+  level: "WARN"
+
+security:
+  clientId: "prod-client-id"
+  jwt:
+    issuer: "https://auth.example.com"
+    audience: "calculator-api"

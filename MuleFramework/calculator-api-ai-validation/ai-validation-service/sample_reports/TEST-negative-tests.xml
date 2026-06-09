@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<testsuite name="negative-tests" tests="6" failures="0" errors="0" skipped="0" time="0.610">
+  <testcase classname="negative-tests" name="missing-num1-fails-validation" time="0.110"/>
+  <testcase classname="negative-tests" name="missing-num2-fails-validation" time="0.095"/>
+  <testcase classname="negative-tests" name="null-num1-fails-as-bad-request" time="0.102"/>
+  <testcase classname="negative-tests" name="invalid-datatype-string-num1-fails" time="0.099"/>
+  <testcase classname="negative-tests" name="invalid-datatype-boolean-num2-fails" time="0.107"/>
+  <testcase classname="negative-tests" name="invalid-datatype-array-num1-fails" time="0.097"/>
+</testsuite>

@@ -1,0 +1,18 @@
+env: "qa"
+
+http:
+  listener:
+    host: "0.0.0.0"
+    port: "8081"
+
+api:
+  baseUri: "https://calculator-qa.example.com"
+
+logging:
+  level: "INFO"
+
+security:
+  clientId: "qa-client-id"
+  jwt:
+    issuer: "https://auth-qa.example.com"
+    audience: "calculator-api-qa"

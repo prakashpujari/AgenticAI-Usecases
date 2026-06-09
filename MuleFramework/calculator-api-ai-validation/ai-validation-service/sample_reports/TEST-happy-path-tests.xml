@@ -1,0 +1,12 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<testsuite name="happy-path-tests" tests="9" failures="0" errors="0" skipped="0" time="0.812">
+  <testcase classname="happy-path-tests" name="add-two-positive-integers" time="0.071"/>
+  <testcase classname="happy-path-tests" name="add-zero-and-positive" time="0.045"/>
+  <testcase classname="happy-path-tests" name="add-negative-and-positive" time="0.052"/>
+  <testcase classname="happy-path-tests" name="subtract-two-positive-integers" time="0.063"/>
+  <testcase classname="happy-path-tests" name="subtract-resulting-in-negative" time="0.058"/>
+  <testcase classname="happy-path-tests" name="multiply-two-positive-integers" time="0.070"/>
+  <testcase classname="happy-path-tests" name="multiply-by-zero" time="0.067"/>
+  <testcase classname="happy-path-tests" name="divide-two-positive-integers" time="0.075"/>
+  <testcase classname="happy-path-tests" name="divide-with-fractional-result" time="0.069"/>
+</testsuite>

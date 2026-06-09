@@ -1,0 +1,29 @@
+{
+  "minMuleVersion": "4.9.0",
+  "javaSpecificationVersions": ["17"],
+  "secureProperties": [
+    "secure::jwt.shared.secret",
+    "secure::oauth.client.secret",
+    "secure::api.client.secret"
+  ],
+  "redeploymentEnabled": true,
+  "name": "calculator-api",
+  "configs": [
+    "calculator-api-main.xml",
+    "calculator-api-impl.xml",
+    "global-error-handler.xml",
+    "security.xml",
+    "observability.xml"
+  ],
+  "exportedResources": [],
+  "bundleDescriptorLoader": {
+    "id": "mule",
+    "attributes": {}
+  },
+  "classLoaderModelLoaderDescriptor": {
+    "id": "mule",
+    "attributes": {
+      "exportedResources": []
+    }
+  }
+}

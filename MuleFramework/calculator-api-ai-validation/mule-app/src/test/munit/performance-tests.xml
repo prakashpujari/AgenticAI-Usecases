@@ -1,0 +1,81 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<mule xmlns="http://www.mulesoft.org/schema/mule/core"
+      xmlns:doc="http://www.mulesoft.org/schema/mule/documentation"
+      xmlns:ee="http://www.mulesoft.org/schema/mule/ee/core"
+      xmlns:munit="http://www.mulesoft.org/schema/mule/munit"
+      xmlns:munit-tools="http://www.mulesoft.org/schema/mule/munit-tools"
+      xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+      xsi:schemaLocation="
+        http://www.mulesoft.org/schema/mule/core
+        http://www.mulesoft.org/schema/mule/core/current/mule.xsd
+        http://www.mulesoft.org/schema/mule/ee/core
+        http://www.mulesoft.org/schema/mule/ee/core/current/mule-ee.xsd
+        http://www.mulesoft.org/schema/mule/munit
+        http://www.mulesoft.org/schema/mule/munit/current/mule-munit.xsd
+        http://www.mulesoft.org/schema/mule/munit-tools
+        http://www.mulesoft.org/schema/mule/munit-tools/current/mule-munit-tools.xsd">
+
+    <munit:config name="performance-tests.xml"/>
+
+    <!-- =========================================================== -->
+    <!-- 100 CONCURRENT REQUESTS                                     -->
+    <!-- Implemented with scatter-gather over 100 routes calling     -->
+    <!-- the add flow. Validates throughput and correctness          -->
+    <!-- under contention.                                           -->
+    <!-- =========================================================== -->
+    <munit:test name="100-concurrent-add-requests" timeOut="60000">
+        <munit:behavior>
+            <ee:transform>
+                <ee:variables>
+                    <ee:set-variable variableName="payloads"><![CDATA[%dw 2.0
+output application/json
+---
+1 to 100 map { num1: $$, num2: $$ }]]></ee:set-variable>
+                </ee:variables>
+            </ee:transform>
+        </munit:behavior>
+        <munit:execution>
+            <parallel-foreach collection="#[vars.payloads]" maxConcurrency="20">
+                <set-payload value="#[payload]"/>
+                <flow-ref name="calculator-add-impl"/>
+            </parallel-foreach>
+        </munit:execution>
+        <munit:validation>
+            <munit-tools:assert-that expression="#[sizeOf(payload)]"
+                                     is="#[MunitTools::equalTo(100)]"/>
+            <munit-tools:assert-that expression="#[payload[0].result]"
+                                     is="#[MunitTools::equalTo(2)]"/>
+            <munit-tools:assert-that expression="#[payload[99].result]"
+                                     is="#[MunitTools::equalTo(200)]"/>
+        </munit:validation>
+    </munit:test>
+
+    <!-- =========================================================== -->
+    <!-- 1000 CONCURRENT REQUESTS                                    -->
+    <!-- =========================================================== -->
+    <munit:test name="1000-concurrent-multiply-requests" timeOut="120000">
+        <munit:behavior>
+            <ee:transform>
+                <ee:variables>
+                    <ee:set-variable variableName="payloads"><![CDATA[%dw 2.0
+output application/json
+---
+1 to 1000 map { num1: $$, num2: 2 }]]></ee:set-variable>
+                </ee:variables>
+            </ee:transform>
+        </munit:behavior>
+        <munit:execution>
+            <parallel-foreach collection="#[vars.payloads]" maxConcurrency="50">
+                <set-payload value="#[payload]"/>
+                <flow-ref name="calculator-multiply-impl"/>
+            </parallel-foreach>
+        </munit:execution>
+        <munit:validation>
+            <munit-tools:assert-that expression="#[sizeOf(payload)]"
+                                     is="#[MunitTools::equalTo(1000)]"/>
+            <munit-tools:assert-that expression="#[payload[999].result]"
+                                     is="#[MunitTools::equalTo(2000)]"/>
+        </munit:validation>
+    </munit:test>
+
+</mule>

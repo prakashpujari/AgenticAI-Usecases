@@ -1,0 +1,7 @@
+{
+  "applicationCoverage": 98,
+  "resourceCoverage": 97,
+  "flowCoverage": 98,
+  "totalMessageProcessors": 142,
+  "coveredMessageProcessors": 139
+}
