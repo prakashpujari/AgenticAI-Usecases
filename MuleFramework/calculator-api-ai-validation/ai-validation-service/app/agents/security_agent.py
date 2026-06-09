@@ -37,7 +37,7 @@ class SecurityAgent(BaseAgent):
             f"Prior agent context:\n{prior_summaries}\n\n"
             "Provide a JSON report scoring the security posture."
         )
-        result = self._ask_json(prompt)
+        result = self._traced_ask_json(prompt)
         findings = [self._finding(f) for f in result.get("findings", []) if isinstance(f, dict)]
         if not findings:
             findings = [

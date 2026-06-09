@@ -2,9 +2,10 @@
 from __future__ import annotations
 
 import logging
+import os
 from pathlib import Path
 
-from fastapi import FastAPI, HTTPException, UploadFile, File
+from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
@@ -21,6 +22,18 @@ from app.utils.logging_config import configure_logging
 settings = get_settings()
 configure_logging(settings.log_level)
 logger = logging.getLogger(__name__)
+
+# ── LangSmith tracing ──────────────────────────────────────────────────────
+# Must be set in os.environ *before* any langchain/langgraph import resolves
+# its tracer, so we do it here at module load time.
+if settings.langchain_api_key:
+    os.environ.setdefault("LANGCHAIN_TRACING_V2", "true")
+    os.environ.setdefault("LANGCHAIN_API_KEY", settings.langchain_api_key)
+    os.environ.setdefault("LANGCHAIN_PROJECT", settings.langchain_project)
+    os.environ.setdefault("LANGCHAIN_ENDPOINT", settings.langchain_endpoint)
+    logger.info("LangSmith tracing enabled project=%s", settings.langchain_project)
+else:
+    logger.info("LangSmith tracing disabled (no LANGCHAIN_API_KEY)")
 
 app = FastAPI(
     title="calculator-api AI Validation Service",

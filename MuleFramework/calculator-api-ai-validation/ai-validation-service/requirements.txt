@@ -4,8 +4,9 @@ pydantic==2.9.2
 pydantic-settings==2.6.1
 python-multipart==0.0.17
 
-# LangGraph pipeline
+# LangGraph pipeline + LangSmith tracing
 langgraph==0.2.61
+langsmith>=0.1.147
 
 # XML parsing
 defusedxml==0.7.1

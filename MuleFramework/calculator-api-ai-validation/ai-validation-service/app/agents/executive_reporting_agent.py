@@ -73,7 +73,7 @@ class ExecutiveReportingAgent(BaseAgent):
             f"recommendation {dashboard.recommendation}. "
             "Then return JSON with keys summary, recommendation."
         )
-        result = self._ask_json(prompt)
+        result = self._traced_ask_json(prompt)
         exec_summary = result.get(
             "summary",
             f"{dashboard.application} (Mule {dashboard.runtime}) is {dashboard.recommendation}. "

@@ -33,7 +33,7 @@ class PerformanceAgent(BaseAgent):
             "Constraints: 100 concurrent target ≤ p95 200ms; 1000 concurrent target ≤ p95 800ms. "
             "Produce a JSON report scoring performance and listing any tail-latency risks."
         )
-        result = self._ask_json(prompt)
+        result = self._traced_ask_json(prompt)
         findings = [self._finding(f) for f in result.get("findings", []) if isinstance(f, dict)]
         if not findings:
             findings = [

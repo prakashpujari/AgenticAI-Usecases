@@ -11,6 +11,14 @@ from typing import Any, TypedDict
 
 from langgraph.graph import END, START, StateGraph
 
+try:
+    from langsmith import traceable
+except ImportError:  # tracing optional at runtime
+    def traceable(**_kw):  # type: ignore[misc]
+        def _wrap(fn):
+            return fn
+        return _wrap
+
 from app.agents.api_design_agent import APIDesignAgent
 from app.agents.executive_reporting_agent import ExecutiveReportingAgent
 from app.agents.mule_review_agent import MuleReviewAgent
@@ -92,6 +100,10 @@ def build_workflow():
     return graph.compile()
 
 
+@traceable(
+    name="MuleFramework Validation Pipeline",
+    tags=["mulesoft", "langgraph", "validation"],
+)
 def run_pipeline(
     munit_reports_dir: Path,
     raml_path: Path,
@@ -107,7 +119,18 @@ def run_pipeline(
         "mule_xml_dir": str(mule_xml_dir),
         "munit_reports_dir": str(munit_reports_dir),
     }
-    final_state: GraphState = workflow.invoke(initial)
+    final_state: GraphState = workflow.invoke(
+        initial,
+        config={
+            "run_name": f"{application} v{runtime} validation",
+            "tags": ["mulesoft", application, f"runtime-{runtime}"],
+            "metadata": {
+                "application": application,
+                "runtime": runtime,
+                "munit_reports_dir": str(munit_reports_dir),
+            },
+        },
+    )
     return {
         "dashboard": final_state["dashboard"],
         "agent_reports": final_state["agent_reports"],

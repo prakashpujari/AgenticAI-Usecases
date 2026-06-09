@@ -29,7 +29,7 @@ class APIDesignAgent(BaseAgent):
             "and presence of all four endpoints (add, subtract, multiply, divide).\n\n"
             f"```raml\n{raml_text[:6000]}\n```"
         )
-        result = self._ask_json(prompt)
+        result = self._traced_ask_json(prompt)
         findings = [self._finding(f) for f in result.get("findings", []) if isinstance(f, dict)]
         if not findings:
             findings = [

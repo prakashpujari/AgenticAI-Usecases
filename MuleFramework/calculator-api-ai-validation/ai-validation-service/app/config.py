@@ -25,6 +25,12 @@ class Settings(BaseSettings):
     raml_path: Path = Field(default=Path("./fixtures/raml/calculator-api.raml"))
     mule_xml_dir: Path = Field(default=Path("./fixtures/mule"))
 
+    # LangSmith tracing
+    langchain_tracing_v2: str = Field(default="false")
+    langchain_api_key: str = Field(default="")
+    langchain_project: str = Field(default="mule-ai-validation")
+    langchain_endpoint: str = Field(default="https://api.smith.langchain.com")
+
 
 @lru_cache
 def get_settings() -> Settings:

@@ -42,7 +42,7 @@ class MUnitAgent(BaseAgent):
             "Provide a JSON report with: score (weight 70% pass-rate, 30% coverage), "
             "summary, findings[] including root-cause hypothesis for each failure."
         )
-        result = self._ask_json(prompt)
+        result = self._traced_ask_json(prompt)
 
         pass_rate = self._pass_rate(report)
         derived_score = int(round(0.7 * pass_rate + 0.3 * report.coverage_percent))

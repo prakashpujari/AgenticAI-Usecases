@@ -32,7 +32,7 @@ class MuleReviewAgent(BaseAgent):
             "correlation-ID propagation, and no hard-coded secrets.\n\n"
             f"{joined[:12000]}"
         )
-        result = self._ask_json(prompt)
+        result = self._traced_ask_json(prompt)
         findings = [self._finding(f) for f in result.get("findings", []) if isinstance(f, dict)]
         if not findings:
             findings = [
