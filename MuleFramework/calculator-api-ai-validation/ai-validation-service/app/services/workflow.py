@@ -24,21 +24,29 @@ from app.services.munit_parser import MUnitReportParser
 
 logger = logging.getLogger(__name__)
 
-
-def _get_tracer():
-    """Return a LangChainTracer if langsmith is available + configured, else None."""
+# ── LangSmith tracer (langchain_core callback for node-level spans) ──────────
+def _build_callbacks() -> list:
     api_key = os.environ.get("LANGCHAIN_API_KEY") or os.environ.get("LANGSMITH_API_KEY")
     if not api_key:
-        return None
+        return []
     try:
         from langchain_core.tracers import LangChainTracer
         project = os.environ.get("LANGCHAIN_PROJECT", "mule-ai-validation")
-        tracer = LangChainTracer(project_name=project)
-        logger.info("LangSmith tracer active project=%s", project)
-        return tracer
+        return [LangChainTracer(project_name=project)]
     except Exception as exc:
-        logger.warning("LangSmith tracer init failed: %s", exc)
-        return None
+        logger.warning("LangChainTracer unavailable (%s) — using direct client tracing only", exc)
+        return []
+
+
+# ── Direct langsmith tracing via @traceable (works with langsmith >=0.2) ────
+try:
+    from langsmith import traceable as _traceable
+    _HAS_LANGSMITH = True
+except ImportError:
+    _HAS_LANGSMITH = False
+    def _traceable(**_kw):  # type: ignore[misc]
+        def _d(fn): return fn
+        return _d
 
 
 class GraphState(TypedDict, total=False):
@@ -109,6 +117,11 @@ def build_workflow():
     return graph.compile()
 
 
+@_traceable(
+    run_type="chain",
+    name="MuleFramework Validation Pipeline",
+    tags=["mulesoft", "langgraph", "validation"],
+)
 def run_pipeline(
     munit_reports_dir: Path,
     raml_path: Path,
@@ -116,8 +129,7 @@ def run_pipeline(
     application: str = "calculator-api",
     runtime: str = "4.9",
 ) -> dict[str, Any]:
-    tracer = _get_tracer()
-    callbacks = [tracer] if tracer else []
+    callbacks = _build_callbacks()
 
     workflow = build_workflow()
     initial: GraphState = {
