@@ -59,6 +59,58 @@ def health() -> dict[str, str]:
     return {"status": "ok", "service": "ai-validation", "env": settings.app_env}
 
 
+@app.get("/trace-status")
+def trace_status() -> dict:
+    """Diagnostic: report LangSmith connectivity from this container."""
+    import importlib
+    result: dict = {
+        "langchain_api_key_set": bool(os.environ.get("LANGCHAIN_API_KEY")),
+        "langsmith_api_key_set": bool(os.environ.get("LANGSMITH_API_KEY")),
+        "langchain_project": os.environ.get("LANGCHAIN_PROJECT", ""),
+        "langsmith_installed": False,
+        "langsmith_version": None,
+        "langchain_core_installed": False,
+        "tracer_created": False,
+        "test_run_id": None,
+        "error": None,
+    }
+    try:
+        ls = importlib.import_module("langsmith")
+        result["langsmith_installed"] = True
+        result["langsmith_version"] = getattr(ls, "__version__", "?")
+
+        api_key = os.environ.get("LANGCHAIN_API_KEY") or os.environ.get("LANGSMITH_API_KEY")
+        client = ls.Client(api_key=api_key)
+        import uuid, datetime
+        run_id = uuid.uuid4()
+        client.create_run(
+            id=run_id,
+            name="trace-test",
+            run_type="chain",
+            project_name=os.environ.get("LANGCHAIN_PROJECT", "mule-ai-validation"),
+            inputs={"source": "trace-status endpoint"},
+            start_time=datetime.datetime.utcnow(),
+        )
+        client.update_run(
+            run_id,
+            outputs={"result": "ok"},
+            end_time=datetime.datetime.utcnow(),
+        )
+        result["test_run_id"] = str(run_id)
+        result["tracer_created"] = True
+    except Exception as exc:
+        result["error"] = str(exc)
+
+    try:
+        lc = importlib.import_module("langchain_core")
+        result["langchain_core_installed"] = True
+        result["langchain_core_version"] = getattr(lc, "__version__", "?")
+    except Exception:
+        pass
+
+    return result
+
+
 @app.get("/ready")
 def ready() -> dict[str, str]:
     return {"status": "ready"}
