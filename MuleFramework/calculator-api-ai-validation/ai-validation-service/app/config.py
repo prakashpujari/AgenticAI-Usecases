@@ -21,8 +21,8 @@ class Settings(BaseSettings):
     groq_timeout_seconds: float = Field(default=30.0)
 
     munit_reports_dir: Path = Field(default=Path("./sample_reports"))
-    raml_path: Path = Field(default=Path("../mule-app/src/main/resources/api/calculator-api.raml"))
-    mule_xml_dir: Path = Field(default=Path("../mule-app/src/main/mule"))
+    raml_path: Path = Field(default=Path("./fixtures/raml/calculator-api.raml"))
+    mule_xml_dir: Path = Field(default=Path("./fixtures/mule"))
 
 
 @lru_cache

@@ -1,0 +1,156 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<mule xmlns="http://www.mulesoft.org/schema/mule/core"
+      xmlns:doc="http://www.mulesoft.org/schema/mule/documentation"
+      xmlns:ee="http://www.mulesoft.org/schema/mule/ee/core"
+      xmlns:json="http://www.mulesoft.org/schema/mule/json"
+      xmlns:os="http://www.mulesoft.org/schema/mule/os"
+      xmlns:client-id-enforcement="http://www.mulesoft.org/schema/mule/client-id-enforcement"
+      xmlns:jwt-validation="http://www.mulesoft.org/schema/mule/jwt-validation"
+      xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+      xsi:schemaLocation="
+        http://www.mulesoft.org/schema/mule/core
+        http://www.mulesoft.org/schema/mule/core/current/mule.xsd
+        http://www.mulesoft.org/schema/mule/ee/core
+        http://www.mulesoft.org/schema/mule/ee/core/current/mule-ee.xsd
+        http://www.mulesoft.org/schema/mule/json
+        http://www.mulesoft.org/schema/mule/json/current/mule-json.xsd
+        http://www.mulesoft.org/schema/mule/os
+        http://www.mulesoft.org/schema/mule/os/current/mule-os.xsd
+        http://www.mulesoft.org/schema/mule/client-id-enforcement
+        http://www.mulesoft.org/schema/mule/client-id-enforcement/current/mule-client-id-enforcement.xsd
+        http://www.mulesoft.org/schema/mule/jwt-validation
+        http://www.mulesoft.org/schema/mule/jwt-validation/current/mule-jwt-validation.xsd">
+
+    <!-- =========================================================== -->
+    <!-- JWT VALIDATION CONFIG                                       -->
+    <!-- =========================================================== -->
+    <jwt-validation:config name="jwt-validation-config" doc:name="JWT Validation">
+        <jwt-validation:signing-method-shared>
+            <jwt-validation:hmac-shared-key sharedKey="${secure::jwt.shared.secret}"
+                                            algorithm="HS256"/>
+        </jwt-validation:signing-method-shared>
+        <jwt-validation:registered-claims-validation
+            audience="${security.jwt.audience}"
+            issuer="${security.jwt.issuer}"
+            notBefore="OPTIONAL"
+            expiration="MANDATORY"
+            subject="MANDATORY"/>
+    </jwt-validation:config>
+
+    <!-- =========================================================== -->
+    <!-- CLIENT ID ENFORCEMENT                                       -->
+    <!-- =========================================================== -->
+    <client-id-enforcement:config name="client-id-enforcement-config"
+                                  doc:name="Client ID Enforcement"/>
+
+    <!-- =========================================================== -->
+    <!-- OBJECT STORE USED FOR RATE LIMITING                         -->
+    <!-- =========================================================== -->
+    <os:object-store name="rateLimitStore"
+                     entryTtl="60"
+                     entryTtlUnit="SECONDS"
+                     maxEntries="100000"
+                     expirationInterval="30"
+                     expirationIntervalUnit="SECONDS"
+                     persistent="false"/>
+
+    <!-- =========================================================== -->
+    <!-- SECURITY MAIN ENFORCEMENT SUB-FLOW                          -->
+    <!-- Called from calculator-api-main BEFORE the APIKit router    -->
+    <!-- =========================================================== -->
+    <sub-flow name="security-enforce">
+        <!-- 1. JSON Threat Protection (size/depth/key-count guards) -->
+        <flow-ref name="json-threat-protection"/>
+
+        <!-- 2. Rate limiting -->
+        <flow-ref name="rate-limit-check"/>
+
+        <!-- 3. Client ID enforcement -->
+        <client-id-enforcement:validate-client config-ref="client-id-enforcement-config"
+                                               doc:name="enforce-client-id"/>
+
+        <!-- 4. JWT validation -->
+        <jwt-validation:validate config-ref="jwt-validation-config"
+                                 token="#[attributes.headers.authorization
+                                          replace 'Bearer ' with '' default '']"
+                                 doc:name="validate-jwt"/>
+    </sub-flow>
+
+    <!-- =========================================================== -->
+    <!-- JSON THREAT PROTECTION                                       -->
+    <!-- Hardened guards: max body size, depth, key count             -->
+    <!-- =========================================================== -->
+    <sub-flow name="json-threat-protection">
+        <ee:transform doc:name="threat-scan">
+            <ee:variables>
+                <ee:set-variable variableName="threatScan"><![CDATA[%dw 2.0
+output application/json
+import * from dw::core::Strings
+var raw = (payload default {}) as String { format: "application/json" } default "{}"
+var size = sizeOf(raw)
+var maxSize = 8192
+var keysCount = sizeOf(payload pluck $$) default 0
+var maxKeys = 50
+var deepest = sizeOf(raw splitBy "{") + sizeOf(raw splitBy "[")
+var maxDepth = 30
+---
+{
+  size: size,
+  keys: keysCount,
+  depthIndicator: deepest,
+  exceedsSize: size > maxSize,
+  exceedsKeys: keysCount > maxKeys,
+  exceedsDepth: deepest > maxDepth,
+  threatDetected: (size > maxSize) or (keysCount > maxKeys) or (deepest > maxDepth)
+}]]></ee:set-variable>
+            </ee:variables>
+        </ee:transform>
+        <choice>
+            <when expression="#[vars.threatScan.threatDetected]">
+                <raise-error type="JSON-THREAT:THREAT_DETECTED"
+                             description="JSON payload exceeded security thresholds"/>
+            </when>
+        </choice>
+    </sub-flow>
+
+    <!-- =========================================================== -->
+    <!-- RATE LIMITING                                                -->
+    <!-- In-memory token bucket keyed by client_id header             -->
+    <!-- =========================================================== -->
+    <sub-flow name="rate-limit-check">
+        <ee:transform>
+            <ee:variables>
+                <ee:set-variable variableName="rateKey"><![CDATA[%dw 2.0
+output application/json
+---
+(attributes.headers.client_id default "anonymous") ++ ":" ++ (now() as String {format: "yyyy-MM-dd'T'HH:mm"})]]></ee:set-variable>
+            </ee:variables>
+        </ee:transform>
+        <try>
+            <os:retrieve key="#[vars.rateKey]" objectStore="rateLimitStore">
+                <os:default-value>#[0]</os:default-value>
+            </os:retrieve>
+            <ee:transform>
+                <ee:variables>
+                    <ee:set-variable variableName="newCount"><![CDATA[%dw 2.0
+output application/json
+---
+(payload default 0) + 1]]></ee:set-variable>
+                </ee:variables>
+            </ee:transform>
+            <os:store key="#[vars.rateKey]" objectStore="rateLimitStore">
+                <os:value>#[vars.newCount]</os:value>
+            </os:store>
+            <choice>
+                <when expression="#[vars.newCount > p('rate.limit.requestsPerMinute') as Number]">
+                    <raise-error type="APP:RATE_LIMIT_EXCEEDED"
+                                 description="Too many requests"/>
+                </when>
+            </choice>
+            <error-handler>
+                <on-error-continue type="OS:KEY_NOT_FOUND, OS:STORE_NOT_AVAILABLE"/>
+            </error-handler>
+        </try>
+    </sub-flow>
+
+</mule>

@@ -23,6 +23,7 @@ WORKDIR /app
 COPY --from=build /install /usr/local
 COPY app ./app
 COPY sample_reports ./sample_reports
+COPY fixtures ./fixtures
 
 USER app
 EXPOSE 8000

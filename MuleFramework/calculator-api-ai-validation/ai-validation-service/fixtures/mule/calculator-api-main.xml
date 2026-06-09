@@ -1,0 +1,90 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<mule xmlns="http://www.mulesoft.org/schema/mule/core"
+      xmlns:doc="http://www.mulesoft.org/schema/mule/documentation"
+      xmlns:http="http://www.mulesoft.org/schema/mule/http"
+      xmlns:apikit="http://www.mulesoft.org/schema/mule/mule-apikit"
+      xmlns:secure-properties="http://www.mulesoft.org/schema/mule/secure-properties"
+      xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+      xsi:schemaLocation="
+        http://www.mulesoft.org/schema/mule/core
+        http://www.mulesoft.org/schema/mule/core/current/mule.xsd
+        http://www.mulesoft.org/schema/mule/http
+        http://www.mulesoft.org/schema/mule/http/current/mule-http.xsd
+        http://www.mulesoft.org/schema/mule/mule-apikit
+        http://www.mulesoft.org/schema/mule/mule-apikit/current/mule-apikit.xsd
+        http://www.mulesoft.org/schema/mule/secure-properties
+        http://www.mulesoft.org/schema/mule/secure-properties/current/mule-secure-properties.xsd">
+
+    <!-- ============================================== -->
+    <!-- CONFIGURATION                                  -->
+    <!-- ============================================== -->
+    <configuration-properties doc:name="common-config" file="config/common.yaml"/>
+    <configuration-properties doc:name="env-config" file="config/${env}.yaml"/>
+
+    <secure-properties:config name="secure-config"
+                              doc:name="secure-properties-config"
+                              file="config/secure-${env}.yaml"
+                              key="${runtime.encryption.key}">
+        <secure-properties:encrypt algorithm="AES" mode="CBC" useRandomIVs="true"/>
+    </secure-properties:config>
+
+    <!-- ============================================== -->
+    <!-- HTTP LISTENER                                  -->
+    <!-- ============================================== -->
+    <http:listener-config name="calculator-api-httpListener-config">
+        <http:listener-connection host="${http.listener.host}" port="${http.listener.port}"/>
+    </http:listener-config>
+
+    <!-- ============================================== -->
+    <!-- APIKIT ROUTER                                  -->
+    <!-- ============================================== -->
+    <apikit:config name="calculator-api-config"
+                   api="api/calculator-api.raml"
+                   outboundHeadersMapName="outboundHeaders"
+                   httpStatusVarName="httpStatus"/>
+
+    <!-- ============================================== -->
+    <!-- MAIN FLOW                                       -->
+    <!-- ============================================== -->
+    <flow name="calculator-api-main" doc:id="main-flow">
+        <http:listener config-ref="calculator-api-httpListener-config"
+                       path="/calculator/v1/*">
+            <http:response statusCode="#[vars.httpStatus default 200]">
+                <http:headers>#[vars.outboundHeaders default {}]</http:headers>
+            </http:response>
+            <http:error-response statusCode="#[vars.httpStatus default 500]">
+                <http:body>#[payload]</http:body>
+                <http:headers>#[vars.outboundHeaders default {}]</http:headers>
+            </http:error-response>
+        </http:listener>
+
+        <flow-ref name="observability-request-start" doc:name="start-trace"/>
+        <flow-ref name="security-enforce" doc:name="security-check"/>
+
+        <apikit:router config-ref="calculator-api-config"/>
+
+        <flow-ref name="observability-request-success" doc:name="end-trace"/>
+
+        <error-handler ref="global-error-handler"/>
+    </flow>
+
+    <!-- ============================================== -->
+    <!-- APIKIT GENERATED ROUTES                        -->
+    <!-- ============================================== -->
+    <flow name="post:\calculator\add:application\json:calculator-api-config">
+        <flow-ref name="calculator-add-impl" doc:name="add"/>
+    </flow>
+
+    <flow name="post:\calculator\subtract:application\json:calculator-api-config">
+        <flow-ref name="calculator-subtract-impl" doc:name="subtract"/>
+    </flow>
+
+    <flow name="post:\calculator\multiply:application\json:calculator-api-config">
+        <flow-ref name="calculator-multiply-impl" doc:name="multiply"/>
+    </flow>
+
+    <flow name="post:\calculator\divide:application\json:calculator-api-config">
+        <flow-ref name="calculator-divide-impl" doc:name="divide"/>
+    </flow>
+
+</mule>

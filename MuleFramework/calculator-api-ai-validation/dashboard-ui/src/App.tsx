@@ -6,15 +6,19 @@ import type { PipelineRequest, PipelineResponse } from './types';
 import './index.css';
 
 const DEFAULT_PATHS: PipelineRequest = {
-  munit_reports_dir:
-    'C:/pp/GitHub/AgenticAI-Usecases/MuleFramework/calculator-api-ai-validation/ai-validation-service/sample_reports',
-  raml_path:
-    'C:/pp/GitHub/AgenticAI-Usecases/MuleFramework/calculator-api-ai-validation/mule-app/src/main/resources/api/calculator-api.raml',
-  mule_xml_dir:
-    'C:/pp/GitHub/AgenticAI-Usecases/MuleFramework/calculator-api-ai-validation/mule-app/src/main/mule',
+  munit_reports_dir: '',
+  raml_path: '',
+  mule_xml_dir: '',
   application: 'calculator-api',
   runtime: '4.9',
 };
+
+// In production (Vercel) set VITE_API_URL to the Render backend URL.
+// In development the Vite proxy rewrites /api/* → localhost:8000/*.
+const API_ENDPOINT =
+  import.meta.env.VITE_API_URL
+    ? `${import.meta.env.VITE_API_URL}/validate`
+    : '/api/validate';
 
 declare global {
   interface Window {
@@ -46,7 +50,7 @@ export default function App() {
     setElapsed(null);
     const start = Date.now();
     try {
-      const res = await fetch('/api/validate', {
+      const res = await fetch(API_ENDPOINT, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', Accept: 'application/json' },
         body: JSON.stringify(request),

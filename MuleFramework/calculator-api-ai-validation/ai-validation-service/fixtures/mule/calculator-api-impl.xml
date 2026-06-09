@@ -1,0 +1,129 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<mule xmlns="http://www.mulesoft.org/schema/mule/core"
+      xmlns:doc="http://www.mulesoft.org/schema/mule/documentation"
+      xmlns:ee="http://www.mulesoft.org/schema/mule/ee/core"
+      xmlns:validation="http://www.mulesoft.org/schema/mule/validation"
+      xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+      xsi:schemaLocation="
+        http://www.mulesoft.org/schema/mule/core
+        http://www.mulesoft.org/schema/mule/core/current/mule.xsd
+        http://www.mulesoft.org/schema/mule/ee/core
+        http://www.mulesoft.org/schema/mule/ee/core/current/mule-ee.xsd
+        http://www.mulesoft.org/schema/mule/validation
+        http://www.mulesoft.org/schema/mule/validation/current/mule-validation.xsd">
+
+    <validation:config name="validation-config" doc:name="validation-config"/>
+
+    <!-- =================================== -->
+    <!-- COMMON VALIDATION SUB-FLOW          -->
+    <!-- =================================== -->
+    <sub-flow name="validate-calculator-request">
+        <ee:transform doc:name="validate-shape">
+            <ee:variables>
+                <ee:set-variable variableName="validation"><![CDATA[%dw 2.0
+output application/json
+---
+{
+  hasNum1: payload.num1?,
+  hasNum2: payload.num2?,
+  n1Number: (payload.num1?) and (payload.num1 is Number),
+  n2Number: (payload.num2?) and (payload.num2 is Number)
+}]]></ee:set-variable>
+            </ee:variables>
+        </ee:transform>
+
+        <choice doc:name="validate-fields">
+            <when expression="#[!vars.validation.hasNum1]">
+                <set-variable variableName="errorCode" value="VALIDATION_ERROR"/>
+                <set-variable variableName="errorMessage" value="num1 is required"/>
+                <raise-error type="APP:VALIDATION_ERROR" description="num1 is required"/>
+            </when>
+            <when expression="#[!vars.validation.hasNum2]">
+                <set-variable variableName="errorCode" value="VALIDATION_ERROR"/>
+                <set-variable variableName="errorMessage" value="num2 is required"/>
+                <raise-error type="APP:VALIDATION_ERROR" description="num2 is required"/>
+            </when>
+            <when expression="#[!vars.validation.n1Number]">
+                <set-variable variableName="errorCode" value="BAD_REQUEST"/>
+                <set-variable variableName="errorMessage" value="num1 must be a number"/>
+                <raise-error type="APP:BAD_REQUEST" description="num1 must be a number"/>
+            </when>
+            <when expression="#[!vars.validation.n2Number]">
+                <set-variable variableName="errorCode" value="BAD_REQUEST"/>
+                <set-variable variableName="errorMessage" value="num2 must be a number"/>
+                <raise-error type="APP:BAD_REQUEST" description="num2 must be a number"/>
+            </when>
+        </choice>
+    </sub-flow>
+
+    <!-- =================================== -->
+    <!-- ADD                                 -->
+    <!-- =================================== -->
+    <flow name="calculator-add-impl">
+        <logger level="INFO" message="#['{&quot;event&quot;:&quot;calculator.add.start&quot;,&quot;correlationId&quot;:&quot;' ++ correlationId ++ '&quot;}']"/>
+        <flow-ref name="validate-calculator-request"/>
+        <ee:transform doc:name="add">
+            <ee:message>
+                <ee:set-payload resource="dwl/add.dwl"/>
+            </ee:message>
+        </ee:transform>
+        <flow-ref name="observability-record-success"/>
+        <logger level="INFO" message="#['{&quot;event&quot;:&quot;calculator.add.success&quot;,&quot;result&quot;:' ++ (payload.result default 0) ++ ',&quot;correlationId&quot;:&quot;' ++ correlationId ++ '&quot;}']"/>
+    </flow>
+
+    <!-- =================================== -->
+    <!-- SUBTRACT                            -->
+    <!-- =================================== -->
+    <flow name="calculator-subtract-impl">
+        <logger level="INFO" message="#['{&quot;event&quot;:&quot;calculator.subtract.start&quot;,&quot;correlationId&quot;:&quot;' ++ correlationId ++ '&quot;}']"/>
+        <flow-ref name="validate-calculator-request"/>
+        <ee:transform doc:name="subtract">
+            <ee:message>
+                <ee:set-payload resource="dwl/subtract.dwl"/>
+            </ee:message>
+        </ee:transform>
+        <flow-ref name="observability-record-success"/>
+        <logger level="INFO" message="#['{&quot;event&quot;:&quot;calculator.subtract.success&quot;,&quot;result&quot;:' ++ (payload.result default 0) ++ ',&quot;correlationId&quot;:&quot;' ++ correlationId ++ '&quot;}']"/>
+    </flow>
+
+    <!-- =================================== -->
+    <!-- MULTIPLY                            -->
+    <!-- =================================== -->
+    <flow name="calculator-multiply-impl">
+        <logger level="INFO" message="#['{&quot;event&quot;:&quot;calculator.multiply.start&quot;,&quot;correlationId&quot;:&quot;' ++ correlationId ++ '&quot;}']"/>
+        <flow-ref name="validate-calculator-request"/>
+        <ee:transform doc:name="multiply">
+            <ee:message>
+                <ee:set-payload resource="dwl/multiply.dwl"/>
+            </ee:message>
+        </ee:transform>
+        <flow-ref name="observability-record-success"/>
+        <logger level="INFO" message="#['{&quot;event&quot;:&quot;calculator.multiply.success&quot;,&quot;result&quot;:' ++ (payload.result default 0) ++ ',&quot;correlationId&quot;:&quot;' ++ correlationId ++ '&quot;}']"/>
+    </flow>
+
+    <!-- =================================== -->
+    <!-- DIVIDE                              -->
+    <!-- =================================== -->
+    <flow name="calculator-divide-impl">
+        <logger level="INFO" message="#['{&quot;event&quot;:&quot;calculator.divide.start&quot;,&quot;correlationId&quot;:&quot;' ++ correlationId ++ '&quot;}']"/>
+        <flow-ref name="validate-calculator-request"/>
+
+        <choice doc:name="check-divide-by-zero">
+            <when expression="#[(payload.num2 as Number) == 0]">
+                <set-variable variableName="errorCode" value="DIVIDE_BY_ZERO"/>
+                <set-variable variableName="errorMessage" value="Cannot divide by zero"/>
+                <raise-error type="APP:DIVIDE_BY_ZERO" description="Cannot divide by zero"/>
+            </when>
+            <otherwise>
+                <ee:transform doc:name="divide">
+                    <ee:message>
+                        <ee:set-payload resource="dwl/divide.dwl"/>
+                    </ee:message>
+                </ee:transform>
+                <flow-ref name="observability-record-success"/>
+                <logger level="INFO" message="#['{&quot;event&quot;:&quot;calculator.divide.success&quot;,&quot;result&quot;:' ++ (payload.result default 0) ++ ',&quot;correlationId&quot;:&quot;' ++ correlationId ++ '&quot;}']"/>
+            </otherwise>
+        </choice>
+    </flow>
+
+</mule>

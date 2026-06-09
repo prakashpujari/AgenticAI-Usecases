@@ -1,0 +1,139 @@
+#%RAML 1.0
+title: Calculator API
+version: v1
+baseUri: https://api.example.com/calculator/{version}
+mediaType: application/json
+protocols: [HTTPS]
+
+securitySchemes:
+  oauth2:
+    type: OAuth 2.0
+    settings:
+      authorizationUri: https://auth.example.com/oauth2/authorize
+      accessTokenUri: https://auth.example.com/oauth2/token
+      authorizationGrants: [client_credentials]
+
+securedBy: [oauth2]
+
+types:
+  CalculatorRequest:
+    type: object
+    additionalProperties: false
+    properties:
+      num1:
+        type: number
+        required: true
+        example: 10
+      num2:
+        type: number
+        required: true
+        example: 20
+    example:
+      num1: 10
+      num2: 20
+
+  CalculatorResponse:
+    type: object
+    properties:
+      result:
+        type: number
+        required: true
+    example:
+      result: 30
+
+  ErrorResponse:
+    type: object
+    properties:
+      success:
+        type: boolean
+        required: true
+      errorCode:
+        type: string
+        required: true
+      message:
+        type: string
+        required: true
+      correlationId:
+        type: string
+        required: true
+    example:
+      success: false
+      errorCode: DIVIDE_BY_ZERO
+      message: Cannot divide by zero
+      correlationId: "12345"
+
+traits:
+  hasStandardErrors:
+    headers:
+      client_id:
+        type: string
+        required: true
+      client_secret:
+        type: string
+        required: true
+      X-Correlation-ID:
+        type: string
+        required: false
+    responses:
+      400:
+        body:
+          application/json:
+            type: ErrorResponse
+      401:
+        body:
+          application/json:
+            type: ErrorResponse
+      422:
+        body:
+          application/json:
+            type: ErrorResponse
+      500:
+        body:
+          application/json:
+            type: ErrorResponse
+
+/calculator:
+  /add:
+    post:
+      is: [hasStandardErrors]
+      body:
+        application/json:
+          type: CalculatorRequest
+      responses:
+        200:
+          body:
+            application/json:
+              type: CalculatorResponse
+  /subtract:
+    post:
+      is: [hasStandardErrors]
+      body:
+        application/json:
+          type: CalculatorRequest
+      responses:
+        200:
+          body:
+            application/json:
+              type: CalculatorResponse
+  /multiply:
+    post:
+      is: [hasStandardErrors]
+      body:
+        application/json:
+          type: CalculatorRequest
+      responses:
+        200:
+          body:
+            application/json:
+              type: CalculatorResponse
+  /divide:
+    post:
+      is: [hasStandardErrors]
+      body:
+        application/json:
+          type: CalculatorRequest
+      responses:
+        200:
+          body:
+            application/json:
+              type: CalculatorResponse
