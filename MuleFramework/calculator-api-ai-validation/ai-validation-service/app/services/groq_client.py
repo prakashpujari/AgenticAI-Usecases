@@ -27,6 +27,7 @@ class GroqClient:
     def __init__(self) -> None:
         settings = get_settings()
         self.model = settings.groq_model
+        self.fallback_model = settings.groq_fallback_model
         self.temperature = settings.groq_temperature
         self.max_tokens = settings.groq_max_tokens
         self.timeout = settings.groq_timeout_seconds
@@ -35,7 +36,7 @@ class GroqClient:
         _key_valid = bool(_key and not _key.startswith("your-"))
         if _key_valid:
             self._api_key: str | None = _key
-            logger.info("Groq client initialized model=%s", self.model)
+            logger.info("Groq client initialized model=%s fallback=%s", self.model, self.fallback_model)
         else:
             self._api_key = None
             logger.warning("Groq API key missing — running in offline fallback mode")
@@ -44,18 +45,30 @@ class GroqClient:
     def is_live(self) -> bool:
         return self._api_key is not None
 
+    def _call(self, messages: list[dict[str, str]], json_mode: bool = False) -> str:
+        if not self.is_live:
+            return self._offline_fallback(messages, json_mode=json_mode)
+        try:
+            return self._call_model(self.model, messages, json_mode=json_mode)
+        except httpx.HTTPStatusError as exc:
+            if exc.response.status_code in (429, 503):
+                logger.warning("Primary model %s unavailable (%s), trying fallback %s",
+                               self.model, exc.response.status_code, self.fallback_model)
+                try:
+                    return self._call_model(self.fallback_model, messages, json_mode=json_mode)
+                except Exception as fb_exc:  # noqa: BLE001
+                    logger.error("Fallback model %s also failed: %s", self.fallback_model, fb_exc)
+            raise
+
     @retry(
         stop=stop_after_attempt(2),
         wait=wait_exponential(multiplier=1, min=2, max=10),
         retry=retry_if_exception_type(_RETRYABLE),
         reraise=True,
     )
-    def _call(self, messages: list[dict[str, str]], json_mode: bool = False) -> str:
-        if not self.is_live:
-            return self._offline_fallback(messages, json_mode=json_mode)
-
+    def _call_model(self, model: str, messages: list[dict[str, str]], json_mode: bool = False) -> str:
         payload: dict[str, Any] = {
-            "model": self.model,
+            "model": model,
             "messages": messages,
             "temperature": self.temperature,
             "max_tokens": self.max_tokens,
@@ -79,8 +92,11 @@ class GroqClient:
             self._api_key = None
             return self._offline_fallback(messages, json_mode=json_mode)
 
-        if response.status_code == 429:
-            raise httpx.HTTPStatusError("rate limited", request=response.request, response=response)
+        if response.status_code in (429, 503):
+            raise httpx.HTTPStatusError(
+                f"model {model} unavailable ({response.status_code})",
+                request=response.request, response=response,
+            )
 
         response.raise_for_status()
         data = response.json()

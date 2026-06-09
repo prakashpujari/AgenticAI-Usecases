@@ -16,6 +16,7 @@ class Settings(BaseSettings):
 
     groq_api_key: str = Field(default="")
     groq_model: str = Field(default="llama-3.3-70b-versatile")
+    groq_fallback_model: str = Field(default="llama-3.1-8b-instant")
     groq_temperature: float = Field(default=0.2)
     groq_max_tokens: int = Field(default=1024)
     groq_timeout_seconds: float = Field(default=30.0)

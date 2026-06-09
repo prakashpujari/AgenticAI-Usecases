@@ -15,5 +15,7 @@ services:
         value: INFO
       - key: GROQ_MODEL
         value: llama-3.3-70b-versatile
+      - key: GROQ_FALLBACK_MODEL
+        value: llama-3.1-8b-instant
       - key: GROQ_TIMEOUT_SECONDS
         value: "45"
