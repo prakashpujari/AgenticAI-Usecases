@@ -1,9 +1,11 @@
 interface Props {
   application?: string;
   runtime?: string;
+  theme: 'dark' | 'light';
+  onToggleTheme: () => void;
 }
 
-export function Header({ application, runtime }: Props) {
+export function Header({ application, runtime, theme, onToggleTheme }: Props) {
   const appLabel = application?.trim() || 'API';
   const subtitle = runtime?.trim()
     ? `${appLabel.toUpperCase()} · RUNTIME ${runtime} · RELEASE READINESS`
@@ -11,10 +13,10 @@ export function Header({ application, runtime }: Props) {
 
   return (
     <header style={{
-      background: 'linear-gradient(135deg, #1a0e45 0%, #160e42 20%, #0e142a 55%, #0a0d16 100%)',
-      borderBottom: '1px solid rgba(139,92,246,0.2)',
+      background: 'var(--header-bg)',
+      borderBottom: '1px solid var(--header-border)',
       position: 'sticky', top: 0, zIndex: 100,
-      boxShadow: '0 4px 40px rgba(0,0,0,0.7)',
+      boxShadow: 'var(--header-shadow)',
     }}>
       {/* Animated rainbow accent line */}
       <div style={{
@@ -32,7 +34,6 @@ export function Header({ application, runtime }: Props) {
       }}>
         {/* Left: logo + title */}
         <div style={{ display: 'flex', alignItems: 'center', gap: '1rem' }}>
-          {/* Logo with glow */}
           <div style={{ position: 'relative', flexShrink: 0 }}>
             <div style={{
               position: 'absolute', inset: '-5px', borderRadius: '15px',
@@ -65,7 +66,7 @@ export function Header({ application, runtime }: Props) {
             </h1>
             <p style={{
               fontSize: '0.68rem', margin: 0, marginTop: '0.18rem',
-              color: '#7c3aed', letterSpacing: '0.1em', fontWeight: 600,
+              color: '#a78bfa', letterSpacing: '0.1em', fontWeight: 600,
               textTransform: 'uppercase',
             }}>
               {subtitle}
@@ -73,12 +74,19 @@ export function Header({ application, runtime }: Props) {
           </div>
         </div>
 
-        {/* Right: tech pills + live badge */}
+        {/* Right: tech pills + theme toggle + live badge */}
         <div style={{ display: 'flex', gap: '0.5rem', alignItems: 'center', flexWrap: 'wrap', justifyContent: 'flex-end' }}>
           <TechPill icon="🔗" label="LangGraph"  color="#4f46e5" />
           <TechPill icon="⚡" label="Groq LLM"   color="#7c3aed" />
           <TechPill icon="🤖" label="6 Agents"   color="#0891b2" />
           <TechPill icon="🔧" label="MuleSoft"   color="#059669" />
+          <button
+            className="theme-toggle-btn"
+            onClick={onToggleTheme}
+            title={theme === 'dark' ? 'Switch to light mode' : 'Switch to dark mode'}
+          >
+            {theme === 'dark' ? '☀️' : '🌙'}
+          </button>
           <LiveBadge />
         </div>
       </div>

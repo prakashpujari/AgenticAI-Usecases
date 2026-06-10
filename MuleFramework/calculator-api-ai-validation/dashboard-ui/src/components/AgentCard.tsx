@@ -49,7 +49,7 @@ function ScoreBadge({ score, color }: { score: number; color: string }) {
   return (
     <div style={{ position: 'relative', width: 44, height: 44, flexShrink: 0 }}>
       <svg width={44} height={44} style={{ transform: 'rotate(-90deg)' }}>
-        <circle cx={22} cy={22} r={r} fill="none" stroke="rgba(255,255,255,0.06)" strokeWidth={5} />
+        <circle cx={22} cy={22} r={r} fill="none" stroke="var(--ring-track)" strokeWidth={5} />
         <circle
           cx={22} cy={22} r={r} fill="none" stroke={color} strokeWidth={5}
           strokeLinecap="round" strokeDasharray={circ} strokeDashoffset={offset}
@@ -77,12 +77,12 @@ export function AgentCard({ report }: { report: AgentReport }) {
     <div style={{
       background: open
         ? `linear-gradient(135deg, ${meta.gradientFrom}, ${meta.gradientTo})`
-        : 'rgba(22,27,46,0.6)',
-      border: `1px solid ${open ? meta.color + '35' : 'rgba(255,255,255,0.07)'}`,
+        : 'var(--bg-agent)',
+      border: `1px solid ${open ? meta.color + '35' : 'var(--border-subtle)'}`,
       borderRadius: '14px',
       overflow: 'hidden',
       transition: 'all 0.25s ease',
-      boxShadow: open ? `0 4px 24px rgba(0,0,0,0.3), 0 0 0 1px ${meta.color}20` : 'none',
+      boxShadow: open ? `0 4px 24px rgba(0,0,0,0.15), 0 0 0 1px ${meta.color}20` : 'none',
     }}>
       <button
         onClick={() => setOpen(o => !o)}
@@ -120,7 +120,7 @@ export function AgentCard({ report }: { report: AgentReport }) {
             )}
           </div>
           <div style={{
-            fontSize: '0.76rem', color: '#64748b', marginTop: '0.2rem',
+            fontSize: '0.76rem', color: 'var(--text-muted)', marginTop: '0.2rem',
             overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', maxWidth: '500px',
           }}>
             {report.summary}
@@ -131,9 +131,9 @@ export function AgentCard({ report }: { report: AgentReport }) {
         <div style={{ display: 'flex', alignItems: 'center', gap: '0.875rem', flexShrink: 0 }}>
           {report.findings.length > 0 && (
             <span style={{
-              fontSize: '0.7rem', color: '#64748b',
-              background: 'rgba(255,255,255,0.05)',
-              border: '1px solid rgba(255,255,255,0.08)',
+              fontSize: '0.7rem', color: 'var(--text-muted)',
+              background: 'var(--border-subtle)',
+              border: '1px solid var(--border-card)',
               padding: '0.2rem 0.5rem', borderRadius: '6px',
               whiteSpace: 'nowrap',
             }}>
@@ -142,7 +142,7 @@ export function AgentCard({ report }: { report: AgentReport }) {
           )}
           <ScoreBadge score={report.score} color={sc} />
           <svg
-            width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#475569" strokeWidth="2"
+            width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="var(--text-dim)" strokeWidth="2"
             style={{ transition: 'transform 0.25s ease', transform: open ? 'rotate(180deg)' : 'rotate(0deg)', flexShrink: 0 }}
           >
             <polyline points="6 9 12 15 18 9" />
@@ -153,18 +153,16 @@ export function AgentCard({ report }: { report: AgentReport }) {
       {/* Expanded content */}
       {open && (
         <div style={{ borderTop: `1px solid ${meta.color}20`, padding: '1.25rem 1.25rem 1.5rem' }}>
-          {/* Summary paragraph */}
           <p style={{
-            fontSize: '0.8125rem', color: '#94a3b8', lineHeight: 1.7,
+            fontSize: '0.8125rem', color: 'var(--text-secondary)', lineHeight: 1.7,
             marginBottom: report.findings.length > 0 ? '1.25rem' : 0,
           }}>
             {report.summary}
           </p>
 
-          {/* Findings */}
           {report.findings.length > 0 && (
             <div style={{ display: 'flex', flexDirection: 'column', gap: '0.625rem' }}>
-              <div style={{ fontSize: '0.7rem', fontWeight: 700, color: '#475569', letterSpacing: '0.08em', marginBottom: '0.25rem' }}>
+              <div style={{ fontSize: '0.7rem', fontWeight: 700, color: 'var(--text-dim)', letterSpacing: '0.08em', marginBottom: '0.25rem' }}>
                 FINDINGS ({report.findings.length})
               </div>
               {report.findings.map((f, i) => {
@@ -192,11 +190,11 @@ export function AgentCard({ report }: { report: AgentReport }) {
                       {sev.label}
                     </span>
                     <div>
-                      <div style={{ fontSize: '0.8125rem', fontWeight: 600, color: '#e2e8f0', lineHeight: 1.4 }}>
+                      <div style={{ fontSize: '0.8125rem', fontWeight: 600, color: 'var(--text-primary)', lineHeight: 1.4 }}>
                         {f.title}
                       </div>
                       {f.detail && (
-                        <div style={{ fontSize: '0.75rem', color: '#64748b', marginTop: '0.3rem', lineHeight: 1.5 }}>
+                        <div style={{ fontSize: '0.75rem', color: 'var(--text-muted)', marginTop: '0.3rem', lineHeight: 1.5 }}>
                           {f.detail}
                         </div>
                       )}

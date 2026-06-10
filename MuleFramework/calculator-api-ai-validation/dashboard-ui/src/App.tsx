@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useLayoutEffect } from 'react';
 import { InputPanel } from './components/InputPanel';
 import { Dashboard } from './components/Dashboard';
 import { Header } from './components/Header';
@@ -13,8 +13,6 @@ const DEFAULT_PATHS: PipelineRequest = {
   runtime: '4.9',
 };
 
-// In production (Vercel) set VITE_API_URL to the Render backend URL.
-// In development the Vite proxy rewrites /api/* → localhost:8000/*.
 const API_BASE = import.meta.env.VITE_API_URL ?? '';
 const API_ENDPOINT    = API_BASE ? `${API_BASE}/validate` : '/api/validate';
 const HEALTH_ENDPOINT = API_BASE ? `${API_BASE}/health`   : '/api/health';
@@ -48,9 +46,25 @@ export default function App() {
   const [error, setError] = useState<string | null>(null);
   const [elapsed, setElapsed] = useState<number | null>(null);
   const [showEmptyHint, setShowEmptyHint] = useState(false);
+  const [theme, setTheme] = useState<'dark' | 'light'>(() => {
+    try { return (localStorage.getItem('mvh-theme') as 'dark' | 'light') || 'dark'; }
+    catch { return 'dark'; }
+  });
 
-  // Keep-alive: ping the backend health endpoint every 10 min so the Render
-  // free-tier service never goes to sleep between user sessions.
+  // Sync theme to <html> element synchronously before paint (no flash).
+  useLayoutEffect(() => {
+    document.documentElement.setAttribute('data-theme', theme);
+  }, [theme]);
+
+  const toggleTheme = () => {
+    setTheme(t => {
+      const next = t === 'dark' ? 'light' : 'dark';
+      try { localStorage.setItem('mvh-theme', next); } catch { /* */ }
+      return next;
+    });
+  };
+
+  // Keep-alive ping every 10 min to prevent Render free-tier sleep.
   useEffect(() => {
     const ping = () => fetch(HEALTH_ENDPOINT, { method: 'GET' }).catch(() => {});
     ping();
@@ -58,7 +72,6 @@ export default function App() {
     return () => clearInterval(id);
   }, []);
 
-  // Allow Puppeteer/tests to inject mock results
   if (typeof window !== 'undefined') {
     window.__injectMockResult = (data: PipelineResponse) => {
       setResult(data);
@@ -75,7 +88,6 @@ export default function App() {
   );
 
   async function runValidation(forceDemoMode = false) {
-    // Show a friendly hint on first click with no inputs instead of hitting the API.
     if (!hasAnyInput && !forceDemoMode) {
       setShowEmptyHint(true);
       return;
@@ -115,8 +127,8 @@ export default function App() {
   return (
     <div style={{
       minHeight: '100vh',
-      background: '#0a0d16',
-      color: '#e2e8f0',
+      background: 'var(--bg-base)',
+      color: 'var(--text-primary)',
       fontFamily: 'Inter, system-ui, -apple-system, sans-serif',
       position: 'relative',
     }}>
@@ -140,17 +152,16 @@ export default function App() {
           background: 'radial-gradient(circle, rgba(79,70,229,0.06) 0%, transparent 70%)',
           animation: 'floatUpDown 13s ease-in-out 5s infinite',
         }} />
-        {/* Subtle dot grid overlay */}
         <div style={{
           position: 'absolute', inset: 0,
-          backgroundImage: 'radial-gradient(rgba(139,92,246,0.07) 1px, transparent 1px)',
+          backgroundImage: 'radial-gradient(rgba(139,92,246,0.06) 1px, transparent 1px)',
           backgroundSize: '28px 28px',
         }} />
       </div>
 
       {/* ── Main content ── */}
       <div style={{ position: 'relative', zIndex: 1 }}>
-        <Header application={request.application} runtime={request.runtime} />
+        <Header application={request.application} runtime={request.runtime} theme={theme} onToggleTheme={toggleTheme} />
 
         <main style={{
           maxWidth: '1440px', margin: '0 auto',
@@ -159,7 +170,6 @@ export default function App() {
         }}>
           <InputPanel request={request} onChange={r => { setRequest(r); setShowEmptyHint(false); }} onRun={runValidation} loading={loading} />
 
-          {/* Empty-input hint — friendly info box, not an error */}
           {showEmptyHint && !loading && (
             <div style={{
               borderRadius: '16px',
@@ -223,10 +233,10 @@ export default function App() {
 
         {/* ── Footer ── */}
         <footer style={{
-          borderTop: '1px solid rgba(255,255,255,0.05)',
+          borderTop: '1px solid var(--footer-border)',
           padding: '1.25rem 2rem',
           textAlign: 'center',
-          color: '#334155',
+          color: 'var(--footer-text)',
           fontSize: '0.72rem',
           letterSpacing: '0.04em',
         }}>
@@ -252,10 +262,10 @@ function LoadingState() {
     <div style={{
       display: 'flex', flexDirection: 'column', alignItems: 'center',
       justifyContent: 'center', padding: '4rem 2rem', gap: '2rem',
-      background: 'linear-gradient(135deg, rgba(22,27,46,0.6) 0%, rgba(18,23,42,0.4) 100%)',
+      background: 'var(--bg-loading-card)',
       borderRadius: '24px',
-      border: '1px solid rgba(124,58,237,0.15)',
-      boxShadow: '0 8px 48px rgba(0,0,0,0.4), inset 0 1px 0 rgba(255,255,255,0.04)',
+      border: '1px solid var(--border-panel)',
+      boxShadow: 'var(--shadow-panel)',
     }}>
       {/* Spinning rings */}
       <div style={{ position: 'relative', width: '80px', height: '80px' }}>
@@ -299,7 +309,7 @@ function LoadingState() {
         }}>
           Running AI validation pipeline…
         </p>
-        <p style={{ color: '#475569', fontSize: '0.825rem', margin: 0 }}>
+        <p style={{ color: 'var(--text-dim)', fontSize: '0.825rem', margin: 0 }}>
           6 specialized agents are analyzing your MuleSoft API
         </p>
       </div>
@@ -313,12 +323,12 @@ function LoadingState() {
           <div key={i} style={{
             display: 'flex', alignItems: 'center', gap: '0.75rem',
             padding: '0.55rem 0.875rem', borderRadius: '10px',
-            background: 'rgba(15,17,30,0.7)',
-            border: '1px solid rgba(255,255,255,0.07)',
+            background: 'var(--bg-loading-step)',
+            border: '1px solid var(--border-subtle)',
             animation: `pulse 2s ease-in-out ${i * 0.2}s infinite`,
           }}>
             <span style={{ fontSize: '0.95rem' }}>{step.icon}</span>
-            <span style={{ fontSize: '0.78rem', color: '#64748b', flex: 1 }}>{step.label}</span>
+            <span style={{ fontSize: '0.78rem', color: 'var(--text-muted)', flex: 1 }}>{step.label}</span>
             <div style={{
               width: '6px', height: '6px', borderRadius: '50%',
               background: 'linear-gradient(135deg, #7c3aed, #06b6d4)',

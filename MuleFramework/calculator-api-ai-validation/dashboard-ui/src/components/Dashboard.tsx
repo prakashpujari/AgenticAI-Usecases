@@ -38,11 +38,6 @@ export function Dashboard({ result, elapsed }: Props) {
 
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: '1.5rem', fontFamily: 'Inter, system-ui, sans-serif' }}>
-      <style>{`
-        .dash-section { animation: fadeSlideUp 0.4s ease forwards; }
-        .stat-tile:hover { transform: translateY(-2px); box-shadow: 0 8px 32px rgba(0,0,0,0.4) !important; }
-        .stat-tile { transition: transform 0.2s ease, box-shadow 0.2s ease; }
-      `}</style>
 
       {/* ── 1. Recommendation Banner (full width) ── */}
       <div className="dash-section" style={{ animationDelay: '0ms' }}>
@@ -52,11 +47,11 @@ export function Dashboard({ result, elapsed }: Props) {
       {/* ── 2. Executive Summary card ── */}
       <div className="dash-section" style={{
         animationDelay: '60ms',
-        background: 'linear-gradient(135deg, #161b2e 0%, #12172a 100%)',
-        border: '1px solid rgba(255,255,255,0.08)',
+        background: 'linear-gradient(135deg, var(--bg-card) 0%, var(--bg-card-end) 100%)',
+        border: '1px solid var(--border-card)',
         borderRadius: '20px',
         padding: '1.75rem 2rem',
-        boxShadow: '0 4px 24px rgba(0,0,0,0.35)',
+        boxShadow: 'var(--shadow-card)',
         position: 'relative', overflow: 'hidden',
       }}>
         <div style={{
@@ -68,7 +63,6 @@ export function Dashboard({ result, elapsed }: Props) {
         <div style={{ display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between', gap: '1rem', flexWrap: 'wrap', marginBottom: '1rem' }}>
           <SectionTitle icon="📋">Executive Summary</SectionTitle>
           <div style={{ display: 'flex', gap: '0.5rem', alignItems: 'center', flexWrap: 'wrap' }}>
-            {/* Overall Grade badge */}
             <span style={{
               fontSize: '0.8rem', fontWeight: 900, padding: '0.25rem 0.7rem',
               borderRadius: '8px', background: `${grade.color}18`,
@@ -79,9 +73,9 @@ export function Dashboard({ result, elapsed }: Props) {
             </span>
             {elapsed !== null && (
               <span style={{
-                fontSize: '0.7rem', color: '#475569',
-                background: 'rgba(255,255,255,0.04)',
-                border: '1px solid rgba(255,255,255,0.07)',
+                fontSize: '0.7rem', color: 'var(--text-dim)',
+                background: 'var(--border-subtle)',
+                border: '1px solid var(--border-subtle)',
                 padding: '0.25rem 0.65rem', borderRadius: '6px',
                 display: 'flex', alignItems: 'center', gap: '0.3rem',
               }}>
@@ -93,7 +87,7 @@ export function Dashboard({ result, elapsed }: Props) {
             <Tag label={`${dashboard.testsExecuted} tests`} color="#059669" />
           </div>
         </div>
-        <p style={{ fontSize: '0.875rem', color: '#94a3b8', lineHeight: 1.75, position: 'relative' }}>
+        <p style={{ fontSize: '0.875rem', color: 'var(--text-secondary)', lineHeight: 1.75, position: 'relative' }}>
           {executive_summary}
         </p>
       </div>
@@ -101,11 +95,11 @@ export function Dashboard({ result, elapsed }: Props) {
       {/* ── 3. Score Rings grid ── */}
       <div className="dash-section" style={{
         animationDelay: '120ms',
-        background: 'linear-gradient(135deg, #161b2e 0%, #12172a 100%)',
-        border: '1px solid rgba(255,255,255,0.08)',
+        background: 'linear-gradient(135deg, var(--bg-card) 0%, var(--bg-card-end) 100%)',
+        border: '1px solid var(--border-card)',
         borderRadius: '20px',
         padding: '1.75rem 2rem',
-        boxShadow: '0 4px 24px rgba(0,0,0,0.35)',
+        boxShadow: 'var(--shadow-card)',
       }}>
         <SectionTitle icon="📊">Quality Metrics</SectionTitle>
         <div style={{
@@ -146,11 +140,11 @@ export function Dashboard({ result, elapsed }: Props) {
       {/* ── 5. Agent Pipeline bar ── */}
       <div className="dash-section" style={{
         animationDelay: '240ms',
-        background: 'linear-gradient(135deg, #161b2e 0%, #12172a 100%)',
-        border: '1px solid rgba(255,255,255,0.08)',
+        background: 'linear-gradient(135deg, var(--bg-card) 0%, var(--bg-card-end) 100%)',
+        border: '1px solid var(--border-card)',
         borderRadius: '20px',
         padding: '1.75rem 2rem',
-        boxShadow: '0 4px 24px rgba(0,0,0,0.35)',
+        boxShadow: 'var(--shadow-card)',
       }}>
         <SectionTitle icon="🔄">Agent Pipeline</SectionTitle>
         <div style={{
@@ -160,25 +154,24 @@ export function Dashboard({ result, elapsed }: Props) {
           {AGENT_PIPELINE.map((ag, idx) => {
             const score = agentScoreMap[ag.key];
             const hasScore = score !== undefined;
-            const color = hasScore ? scoreColor(score) : '#475569';
             return (
               <div key={ag.key} style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
                 <div style={{
                   display: 'flex', alignItems: 'center', gap: '0.5rem',
                   padding: '0.5rem 0.875rem', borderRadius: '999px',
-                  background: hasScore ? `${color}12` : 'rgba(255,255,255,0.04)',
-                  border: `1px solid ${hasScore ? color + '35' : 'rgba(255,255,255,0.08)'}`,
-                  boxShadow: hasScore ? `0 0 12px ${color}15` : 'none',
+                  background: hasScore ? `${scoreColor(score)}12` : 'var(--border-subtle)',
+                  border: `1px solid ${hasScore ? scoreColor(score) + '35' : 'var(--border-card)'}`,
+                  boxShadow: hasScore ? `0 0 12px ${scoreColor(score)}15` : 'none',
                   transition: 'all 0.2s',
                 }}>
                   <span style={{ fontSize: '1rem' }}>{ag.icon}</span>
-                  <span style={{ fontSize: '0.78rem', fontWeight: 600, color: hasScore ? color : '#475569' }}>
+                  <span style={{ fontSize: '0.78rem', fontWeight: 600, color: hasScore ? scoreColor(score) : 'var(--text-dim)' }}>
                     {ag.label}
                   </span>
                   {hasScore && (
                     <span style={{
-                      fontSize: '0.72rem', fontWeight: 800, color,
-                      background: `${color}20`, padding: '0.1rem 0.4rem',
+                      fontSize: '0.72rem', fontWeight: 800, color: scoreColor(score),
+                      background: `${scoreColor(score)}20`, padding: '0.1rem 0.4rem',
                       borderRadius: '5px', marginLeft: '0.1rem',
                     }}>
                       {score}
@@ -186,7 +179,7 @@ export function Dashboard({ result, elapsed }: Props) {
                   )}
                 </div>
                 {idx < AGENT_PIPELINE.length - 1 && (
-                  <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#2d3748" strokeWidth="2.5">
+                  <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="var(--text-hint)" strokeWidth="2.5">
                     <polyline points="9 18 15 12 9 6" />
                   </svg>
                 )}
@@ -199,15 +192,15 @@ export function Dashboard({ result, elapsed }: Props) {
       {/* ── 6. Agent Cards accordion ── */}
       <div className="dash-section" style={{
         animationDelay: '300ms',
-        background: 'linear-gradient(135deg, #161b2e 0%, #12172a 100%)',
-        border: '1px solid rgba(255,255,255,0.08)',
+        background: 'linear-gradient(135deg, var(--bg-card) 0%, var(--bg-card-end) 100%)',
+        border: '1px solid var(--border-card)',
         borderRadius: '20px',
         padding: '1.75rem 2rem',
-        boxShadow: '0 4px 24px rgba(0,0,0,0.35)',
+        boxShadow: 'var(--shadow-card)',
       }}>
         <div style={{ marginBottom: '1.25rem' }}>
           <SectionTitle icon="🤖">Agent Reports</SectionTitle>
-          <p style={{ fontSize: '0.78rem', color: '#475569', marginTop: '0.4rem', marginLeft: '1.75rem' }}>
+          <p style={{ fontSize: '0.78rem', color: 'var(--text-dim)', marginTop: '0.4rem', marginLeft: '1.75rem' }}>
             Click any agent card to expand findings and recommendations
           </p>
         </div>
@@ -228,7 +221,7 @@ function SectionTitle({ icon, children }: { icon: string; children: React.ReactN
     <div style={{ display: 'flex', alignItems: 'center', gap: '0.625rem' }}>
       <span style={{ fontSize: '1rem' }}>{icon}</span>
       <h3 style={{
-        fontSize: '0.95rem', fontWeight: 700, color: '#e2e8f0', margin: 0,
+        fontSize: '0.95rem', fontWeight: 700, color: 'var(--text-primary)', margin: 0,
         letterSpacing: '-0.01em',
       }}>
         {children}
@@ -243,22 +236,21 @@ function StatTile({ label, value, icon, accentColor, sub }: {
 }) {
   return (
     <div className="stat-tile" style={{
-      background: 'linear-gradient(135deg, #13172a 0%, #0f1220 100%)',
+      background: 'linear-gradient(135deg, var(--bg-tile) 0%, var(--bg-tile-end) 100%)',
       border: `1px solid ${accentColor}28`,
       borderRadius: '16px',
       padding: '1.375rem 1.5rem',
-      boxShadow: `0 4px 24px rgba(0,0,0,0.35), 0 0 0 1px ${accentColor}15`,
+      boxShadow: `var(--shadow-card), 0 0 0 1px ${accentColor}15`,
       position: 'relative', overflow: 'hidden',
       cursor: 'default',
     }}>
-      {/* Accent top bar */}
       <div style={{
         position: 'absolute', top: 0, left: 0, right: 0, height: '2px',
         background: `linear-gradient(90deg, ${accentColor}, transparent)`,
       }} />
       <div style={{ fontSize: '1.125rem', marginBottom: '0.5rem' }}>{icon}</div>
       <div style={{
-        fontSize: '0.65rem', fontWeight: 700, color: '#475569',
+        fontSize: '0.65rem', fontWeight: 700, color: 'var(--text-dim)',
         letterSpacing: '0.08em', marginBottom: '0.375rem',
       }}>
         {label.toUpperCase()}
@@ -267,7 +259,7 @@ function StatTile({ label, value, icon, accentColor, sub }: {
         {value}
       </div>
       {sub && (
-        <div style={{ fontSize: '0.68rem', color: '#475569', marginTop: '0.3rem' }}>
+        <div style={{ fontSize: '0.68rem', color: 'var(--text-dim)', marginTop: '0.3rem' }}>
           {sub}
         </div>
       )}

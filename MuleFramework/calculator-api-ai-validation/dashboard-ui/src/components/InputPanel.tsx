@@ -100,15 +100,15 @@ export function InputPanel({ request, onChange, onRun, loading }: Props) {
 
   return (
     <div style={{
-      background: 'linear-gradient(135deg, #13172a 0%, #0f1220 100%)',
-      border: '1px solid rgba(139,92,246,0.22)',
+      background: 'linear-gradient(135deg, var(--bg-tile) 0%, var(--bg-tile-end) 100%)',
+      border: '1px solid var(--border-panel)',
       borderRadius: '22px',
       padding: '2rem',
-      boxShadow: '0 8px 48px rgba(0,0,0,0.45), inset 0 1px 0 rgba(255,255,255,0.05)',
+      boxShadow: 'var(--shadow-panel), inset 0 1px 0 rgba(255,255,255,0.03)',
       position: 'relative',
       overflow: 'hidden',
     }}>
-      {/* Background glow orb */}
+      {/* Background glow orbs */}
       <div style={{
         position: 'absolute', top: '-70px', right: '-70px',
         width: '240px', height: '240px', borderRadius: '50%',
@@ -135,16 +135,15 @@ export function InputPanel({ request, onChange, onRun, loading }: Props) {
             ⚙️
           </div>
           <div>
-            <h2 style={{ color: '#f1f5f9', fontSize: '1rem', fontWeight: 700, margin: 0, letterSpacing: '-0.01em' }}>
+            <h2 style={{ color: 'var(--text-primary)', fontSize: '1rem', fontWeight: 700, margin: 0, letterSpacing: '-0.01em' }}>
               Pipeline Configuration
             </h2>
-            <p style={{ color: '#475569', fontSize: '0.72rem', margin: 0, marginTop: '0.15rem' }}>
+            <p style={{ color: 'var(--text-dim)', fontSize: '0.72rem', margin: 0, marginTop: '0.15rem' }}>
               Configure paths or URLs for your validation run
             </p>
           </div>
         </div>
 
-        {/* Input mode toggle */}
         <ModeToggle mode={inputMode} onChange={setInputMode} />
       </div>
 
@@ -196,7 +195,7 @@ export function InputPanel({ request, onChange, onRun, loading }: Props) {
 
       {/* Run button */}
       <button
-        onClick={onRun}
+        onClick={() => onRun()}
         disabled={loading}
         style={{
           width: '100%',
@@ -204,10 +203,10 @@ export function InputPanel({ request, onChange, onRun, loading }: Props) {
           padding: '0.95rem 2rem', borderRadius: '13px', fontWeight: 700,
           fontSize: '1rem', cursor: loading ? 'not-allowed' : 'pointer',
           background: loading
-            ? 'rgba(40,46,65,0.8)'
+            ? 'var(--bg-loading-step)'
             : 'linear-gradient(135deg, #7c3aed 0%, #4f46e5 50%, #0891b2 100%)',
           backgroundSize: loading ? 'auto' : '200% auto',
-          color: loading ? '#4b5563' : 'white', border: 'none',
+          color: loading ? 'var(--text-dim)' : 'white', border: 'none',
           boxShadow: loading ? 'none' : '0 4px 28px rgba(124,58,237,0.5), 0 0 0 1px rgba(124,58,237,0.35)',
           transition: 'all 0.25s ease',
           letterSpacing: '0.01em',
@@ -234,20 +233,6 @@ export function InputPanel({ request, onChange, onRun, loading }: Props) {
           </>
         )}
       </button>
-
-      <style>{`
-        .field-input:focus {
-          border-color: #7c3aed !important;
-          box-shadow: 0 0 0 3px rgba(124,58,237,0.2) !important;
-          background: rgba(10,12,22,0.95) !important;
-        }
-        .field-input-url:focus {
-          border-color: #0891b2 !important;
-          box-shadow: 0 0 0 3px rgba(8,145,178,0.2) !important;
-          background: rgba(10,12,22,0.95) !important;
-        }
-        .mode-btn:hover { opacity: 0.9; }
-      `}</style>
     </div>
   );
 }
@@ -257,9 +242,9 @@ function ModeToggle({ mode, onChange }: { mode: InputMode; onChange: (m: InputMo
   return (
     <div style={{
       display: 'flex', gap: '0.25rem',
-      background: 'rgba(0,0,0,0.4)',
+      background: 'var(--bg-mode-toggle)',
       borderRadius: '11px', padding: '0.25rem',
-      border: '1px solid rgba(255,255,255,0.06)',
+      border: '1px solid var(--border-toggle)',
     }}>
       {(['path', 'url'] as InputMode[]).map(m => {
         const active = mode === m;
@@ -277,7 +262,7 @@ function ModeToggle({ mode, onChange }: { mode: InputMode; onChange: (m: InputMo
               padding: '0.45rem 1.1rem', borderRadius: '8px', border: 'none',
               cursor: 'pointer', fontWeight: 600, fontSize: '0.78rem',
               background: active ? activeBg : 'transparent',
-              color: active ? activeColor : '#475569',
+              color: active ? activeColor : 'var(--text-dim)',
               boxShadow: active ? `0 0 12px ${activeColor}25` : 'none',
               transition: 'all 0.2s ease',
               display: 'flex', alignItems: 'center', gap: '0.375rem',
@@ -323,7 +308,8 @@ function FieldInput({
     <div>
       <label style={{
         display: 'flex', alignItems: 'center', gap: '0.4rem',
-        fontSize: '0.7rem', fontWeight: 700, color: isUrl ? '#67e8f9' : '#94a3b8',
+        fontSize: '0.7rem', fontWeight: 700,
+        color: isUrl ? '#67e8f9' : 'var(--text-secondary)',
         marginBottom: '0.45rem', letterSpacing: '0.07em',
       }}>
         <span style={{ fontSize: '0.85rem' }}>{icon}</span>
@@ -338,9 +324,9 @@ function FieldInput({
           placeholder={placeholder}
           style={{
             width: '100%', padding: '0.65rem 0.875rem',
-            background: 'rgba(10,12,22,0.85)',
-            border: `1px solid ${isUrl ? 'rgba(8,145,178,0.2)' : 'rgba(255,255,255,0.1)'}`,
-            borderRadius: '10px', color: '#e2e8f0', outline: 'none',
+            background: 'var(--bg-input)',
+            border: `1px solid ${isUrl ? 'var(--border-url)' : 'var(--border-input)'}`,
+            borderRadius: '10px', color: 'var(--text-primary)', outline: 'none',
             fontFamily: mono ? 'ui-monospace, Consolas, "Courier New", monospace' : 'Inter, system-ui, sans-serif',
             fontSize: '0.8rem',
             transition: 'border-color 0.2s, box-shadow 0.2s, background 0.2s',
@@ -356,7 +342,6 @@ function FieldInput({
         )}
       </div>
 
-      {/* GitHub URL type badge */}
       {ghType && ghBadge[ghType] && (
         <div style={{
           display: 'inline-flex', alignItems: 'center', gap: '0.3rem',
@@ -369,7 +354,7 @@ function FieldInput({
       )}
 
       {hint && !ghType && (
-        <p style={{ fontSize: '0.67rem', color: '#2d3748', marginTop: '0.3rem', marginLeft: '0.1rem', lineHeight: 1.4 }}>
+        <p style={{ fontSize: '0.67rem', color: 'var(--text-hint)', marginTop: '0.3rem', marginLeft: '0.1rem', lineHeight: 1.4 }}>
           {hint}
         </p>
       )}

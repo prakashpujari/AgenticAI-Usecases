@@ -39,7 +39,7 @@ export function ScoreRing({ value, label, sublabel, color, size = 100, animated 
           {/* Track */}
           <circle
             cx={size / 2} cy={size / 2} r={r}
-            fill="none" stroke="rgba(255,255,255,0.06)" strokeWidth={strokeWidth}
+            fill="none" stroke="var(--ring-track)" strokeWidth={strokeWidth}
           />
           {/* Value arc */}
           <circle
@@ -72,7 +72,7 @@ export function ScoreRing({ value, label, sublabel, color, size = 100, animated 
             {value}
           </span>
           {sublabel && (
-            <span style={{ fontSize: '0.55rem', color: '#475569', marginTop: '0.1rem', fontWeight: 500 }}>
+            <span style={{ fontSize: '0.55rem', color: 'var(--text-dim)', marginTop: '0.1rem', fontWeight: 500 }}>
               {sublabel}
             </span>
           )}
@@ -81,7 +81,7 @@ export function ScoreRing({ value, label, sublabel, color, size = 100, animated 
       {/* Label */}
       <div style={{ textAlign: 'center' }}>
         <div style={{
-          fontSize: '0.72rem', fontWeight: 600, color: '#94a3b8',
+          fontSize: '0.72rem', fontWeight: 600, color: 'var(--text-secondary)',
           letterSpacing: '0.05em', textTransform: 'uppercase',
         }}>
           {label}
