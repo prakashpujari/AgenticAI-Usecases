@@ -1,15 +1,22 @@
 """Groq LLM client with model-chain fallback and graceful offline mode.
 
-On any 429 / 503 / 529 (rate-limit / overloaded) or network error, the client
-walks through the configured model chain and tries the next model.  Only after
-every model in the chain is exhausted does it return the offline fallback JSON
-— the pipeline never raises to the caller.
+On any 429 / 503 / 529 (rate-limit / overloaded), 400 (unsupported feature
+such as response_format on certain models), or network error, the client
+walks through the configured model chain and tries the next model.  Only
+after every model in the chain is exhausted does it return the offline
+fallback — the pipeline never raises to the caller.
 
-Default chain (overridable via env vars):
-  1. llama-3.3-70b-versatile          (GROQ_MODEL)
+Per-model json_mode recovery:
+  If json_mode=True causes a 400, the same model is retried once WITHOUT
+  response_format.  Groq-hosted models that do not support the JSON
+  constraint can still produce parseable JSON in plain text mode.  The
+  _salvage_json path in complete_json() handles the rest.
+
+Default chain (configurable via env vars GROQ_MODEL / GROQ_FALLBACK_MODELS):
+  1. llama-3.3-70b-versatile
   2. llama-3.1-8b-instant
   3. meta-llama/llama-4-scout-17b-16e-instruct
-  4. moonshotai/kimi-k2-instruct       (GROQ_FALLBACK_MODELS)
+  4. moonshotai/kimi-k2-instruct
 """
 from __future__ import annotations
 
@@ -24,12 +31,14 @@ from app.config import get_settings
 logger = logging.getLogger(__name__)
 
 _GROQ_API_URL = "https://api.groq.com/openai/v1/chat/completions"
-# HTTP status codes that mean "this model is temporarily unavailable — try the next one"
-_FALLTHROUGH_STATUSES = {429, 503, 529}
+
+# Status codes that mean "this model can't serve the request right now OR
+# doesn't support the requested feature" — try the next model in chain.
+_CHAIN_FALLTHROUGH = {400, 429, 503, 529}
 
 
 class GroqClient:
-    """Calls the Groq API via httpx.  Falls through the model chain on transient errors."""
+    """Calls the Groq API via httpx.  Walks the model chain on transient / feature errors."""
 
     def __init__(self) -> None:
         settings = get_settings()
@@ -47,11 +56,7 @@ class GroqClient:
 
         # Build the ordered model chain: primary first, then unique fallbacks.
         primary = settings.groq_model
-        fallbacks = [
-            m.strip()
-            for m in settings.groq_fallback_models.split(",")
-            if m.strip()
-        ]
+        fallbacks = [m.strip() for m in settings.groq_fallback_models.split(",") if m.strip()]
         seen: set[str] = {primary}
         chain: list[str] = [primary]
         for m in fallbacks:
@@ -65,10 +70,10 @@ class GroqClient:
     def is_live(self) -> bool:
         return self._api_key is not None
 
-    # ── internal ───────────────────────────────────────────────────────────
+    # ── internal ────────────────────────────────────────────────────────────
 
     def _call(self, messages: list[dict[str, str]], json_mode: bool = False) -> str:
-        """Try each model in the chain in turn.  Never raises — returns offline JSON on total failure."""
+        """Try each model in the chain in turn.  Never raises — returns offline on total failure."""
         if not self.is_live:
             return self._offline_fallback(messages, json_mode=json_mode)
 
@@ -77,21 +82,22 @@ class GroqClient:
             try:
                 result = self._call_model(model, messages, json_mode=json_mode)
                 if model != self._model_chain[0]:
-                    logger.info("Used fallback model: %s", model)
+                    logger.info("Successfully used fallback model: %s", model)
                 return result
             except httpx.HTTPStatusError as exc:
                 status = exc.response.status_code
-                if status in _FALLTHROUGH_STATUSES:
+                if status in _CHAIN_FALLTHROUGH:
                     logger.warning(
-                        "Model %s returned %s — trying next model in chain", model, status
+                        "Model %s returned HTTP %s — trying next model in chain", model, status
                     )
                     last_err = exc
                     continue
-                # 400/404/401 etc. are not retryable — surface them immediately.
                 if status == 401:
-                    logger.error("Groq auth error — disabling live mode")
+                    logger.error("Groq 401 auth error — disabling live mode")
                     self._api_key = None
                     return self._offline_fallback(messages, json_mode=json_mode)
+                # Other 4xx/5xx: surface immediately (shouldn't happen in practice).
+                logger.error("Model %s unexpected HTTP %s: %s", model, status, exc.response.text[:300])
                 raise
             except (httpx.ConnectError, httpx.TimeoutException) as exc:
                 logger.warning(
@@ -101,10 +107,14 @@ class GroqClient:
                 last_err = exc
                 continue
 
-        logger.error("All models in chain exhausted. Last error: %s", last_err)
+        logger.error(
+            "All %d models in chain exhausted. Last error: %s",
+            len(self._model_chain), last_err,
+        )
         return self._offline_fallback(messages, json_mode=json_mode)
 
     def _call_model(self, model: str, messages: list[dict[str, str]], json_mode: bool = False) -> str:
+        """Single model call.  If json_mode=True causes a 400, retries once without response_format."""
         payload: dict[str, Any] = {
             "model": model,
             "messages": messages,
@@ -114,9 +124,40 @@ class GroqClient:
         if json_mode:
             payload["response_format"] = {"type": "json_object"}
 
+        response = self._post(payload)
+
+        # json_mode 400: some models don't support response_format — retry without it.
+        if response.status_code == 400 and json_mode:
+            logger.warning(
+                "Model %s returned 400 on json_mode (body: %s) — retrying without response_format",
+                model, response.text[:200],
+            )
+            payload.pop("response_format", None)
+            response = self._post(payload)
+
+        # Rate-limit / overload → caller (_call) will advance to next model.
+        if response.status_code in (429, 503, 529):
+            raise httpx.HTTPStatusError(
+                f"model {model} unavailable ({response.status_code}): {response.text[:200]}",
+                request=response.request,
+                response=response,
+            )
+
+        # Any remaining 4xx/5xx (including 400 after the json_mode retry above).
+        if not response.is_success:
+            logger.warning(
+                "Model %s HTTP %s: %s", model, response.status_code, response.text[:300]
+            )
+            # Re-raise as HTTPStatusError so _call() can decide whether to fall through.
+            response.raise_for_status()
+
+        data = response.json()
+        return data["choices"][0]["message"]["content"] or ""
+
+    def _post(self, payload: dict[str, Any]) -> httpx.Response:
         timeout = httpx.Timeout(connect=5.0, read=self.timeout, write=10.0, pool=5.0)
         with httpx.Client(timeout=timeout) as client:
-            response = client.post(
+            return client.post(
                 _GROQ_API_URL,
                 headers={
                     "Authorization": f"Bearer {self._api_key}",
@@ -125,18 +166,7 @@ class GroqClient:
                 json=payload,
             )
 
-        if response.status_code in _FALLTHROUGH_STATUSES:
-            raise httpx.HTTPStatusError(
-                f"model {model} unavailable ({response.status_code})",
-                request=response.request,
-                response=response,
-            )
-
-        response.raise_for_status()
-        data = response.json()
-        return data["choices"][0]["message"]["content"] or ""
-
-    # ── public API ─────────────────────────────────────────────────────────
+    # ── public API ──────────────────────────────────────────────────────────
 
     def complete(self, system_prompt: str, user_prompt: str) -> str:
         messages = [
@@ -146,7 +176,7 @@ class GroqClient:
         try:
             return self._call(messages, json_mode=False)
         except Exception as exc:  # noqa: BLE001
-            logger.exception("Groq completion failed; using offline fallback. err=%s", exc)
+            logger.exception("Groq completion failed after chain; using offline fallback. err=%s", exc)
             return self._offline_fallback(messages, json_mode=False)
 
     def complete_json(self, system_prompt: str, user_prompt: str) -> dict[str, Any]:
@@ -159,13 +189,13 @@ class GroqClient:
             raw = self._call(messages, json_mode=True)
             return json.loads(raw)
         except json.JSONDecodeError:
-            logger.warning("Groq returned non-JSON content; attempting salvage")
+            logger.warning("Groq returned non-JSON content; attempting salvage parse")
             return self._salvage_json(raw)
         except Exception as exc:  # noqa: BLE001
             logger.exception("Groq JSON completion failed; using offline fallback. err=%s", exc)
             return json.loads(self._offline_fallback(messages, json_mode=True))
 
-    # ── helpers ────────────────────────────────────────────────────────────
+    # ── helpers ─────────────────────────────────────────────────────────────
 
     @staticmethod
     def _salvage_json(text: str) -> dict[str, Any]:
@@ -182,12 +212,10 @@ class GroqClient:
     def _offline_fallback(messages: list[dict[str, str]], json_mode: bool) -> str:
         last_user = next((m["content"] for m in reversed(messages) if m["role"] == "user"), "")
         if json_mode:
-            return json.dumps(
-                {
-                    "summary": "Offline mode — all Groq models unreachable. Returning deterministic placeholder.",
-                    "score": 90,
-                    "findings": [],
-                    "echo": last_user[:200],
-                }
-            )
-        return "Offline mode — all Groq models unreachable. Returning deterministic placeholder analysis."
+            return json.dumps({
+                "summary": "All Groq models unreachable — returning offline placeholder.",
+                "score": 90,
+                "findings": [],
+                "echo": last_user[:200],
+            })
+        return "All Groq models unreachable — returning offline placeholder analysis."
