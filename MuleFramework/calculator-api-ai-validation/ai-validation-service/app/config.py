@@ -16,7 +16,15 @@ class Settings(BaseSettings):
 
     groq_api_key: str = Field(default="")
     groq_model: str = Field(default="llama-3.3-70b-versatile")
-    groq_fallback_model: str = Field(default="llama-3.1-8b-instant")
+    # Comma-separated list of fallback models tried in order when the primary
+    # model returns 429 / 503 / 529 or a network error.
+    groq_fallback_models: str = Field(
+        default=(
+            "llama-3.1-8b-instant,"
+            "meta-llama/llama-4-scout-17b-16e-instruct,"
+            "moonshotai/kimi-k2-instruct"
+        )
+    )
     groq_temperature: float = Field(default=0.2)
     groq_max_tokens: int = Field(default=1024)
     groq_timeout_seconds: float = Field(default=30.0)
