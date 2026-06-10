@@ -142,6 +142,22 @@ cleans up after the request.
 
 ## Changelog
 
+### 2026-06-10 (patch — MUnit definition parser)
+- **Backend: MUnit definition XML support** — `munit_parser.py` now has a
+  two-pass strategy:
+  1. Try surefire report format (`TEST-*.xml`, `*surefire*.xml`) as before
+  2. **If no surefire reports found**, fall back to parsing MUnit test
+     definition XML files (Mule XML with `munit:test` elements — the files
+     that live in `src/test/munit/`)
+- Uses `{http://www.mulesoft.org/schema/mule/munit}test` Clark-notation tag
+  matching; regular Mule flow XML files (no `munit:test` elements) are
+  silently skipped
+- `expectedErrorType` attribute stored in `classname` field
+  (e.g. `negative-tests:APP:VALIDATION_ERROR`) so AI agents can identify
+  negative / security / boundary test categories
+- Old `_parse_xml` kept as an alias for backwards compatibility
+- Verified: 29 tests across 5 suites extracted from `src/test/munit/`
+
 ### 2026-06-10 (patch — GitHub URL fix)
 - **Backend: GitHub URL auto-conversion** — `validate()` now detects GitHub
   `blob/` and `tree/` URLs and handles them correctly:
