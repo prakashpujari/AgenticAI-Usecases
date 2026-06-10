@@ -1,6 +1,7 @@
 """API Design Agent - validates RAML and API standards (REST best practices, naming, error contract)."""
 from __future__ import annotations
 
+import re
 from pathlib import Path
 from typing import Any
 
@@ -22,11 +23,22 @@ class APIDesignAgent(BaseAgent):
     def run(self, state: dict[str, Any]) -> AgentReport:
         raml_path = Path(state.get("raml_path", ""))
         raml_text = raml_path.read_text(encoding="utf-8") if raml_path.exists() else "(RAML not found)"
+
+        # Deterministically extract endpoint paths so the LLM cannot hallucinate missing ones.
+        found_paths = re.findall(r"^\s{0,4}(/\w[\w/]*)\s*:", raml_text, re.MULTILINE)
+        verified_paths_note = (
+            f"\nIMPORTANT: The following resource paths were verified present in the RAML text "
+            f"by a deterministic parser — do NOT report any of these as missing: "
+            f"{', '.join(sorted(set(found_paths)))}\n"
+            if found_paths else ""
+        )
+
         prompt = (
             "Review the following RAML 1.0 specification for a Calculator API. "
             "Verify: title/version present, base URI, mediaType, OAuth2 security scheme, "
             "request/response types, hasStandardErrors trait, examples, naming, idempotency, "
-            "and presence of all four endpoints (add, subtract, multiply, divide).\n\n"
+            "and presence of all four endpoints (add, subtract, multiply, divide)."
+            f"{verified_paths_note}\n"
             f"```raml\n{raml_text[:6000]}\n```"
         )
         result = self._traced_ask_json(prompt)
