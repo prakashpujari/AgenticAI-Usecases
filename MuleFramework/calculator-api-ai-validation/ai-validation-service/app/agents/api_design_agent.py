@@ -24,25 +24,28 @@ class APIDesignAgent(BaseAgent):
         raml_path = Path(state.get("raml_path", ""))
         raml_text = raml_path.read_text(encoding="utf-8") if raml_path.exists() else "(RAML not found)"
 
-        # Deterministically extract endpoint paths so the LLM cannot hallucinate missing ones.
-        found_paths = re.findall(r"^\s{0,4}(/\w[\w/]*)\s*:", raml_text, re.MULTILINE)
-        verified_paths_note = (
-            f"\nIMPORTANT: The following resource paths were verified present in the RAML text "
-            f"by a deterministic parser — do NOT report any of these as missing: "
-            f"{', '.join(sorted(set(found_paths)))}\n"
-            if found_paths else ""
-        )
+        # Deterministically extract all resource paths present in the RAML.
+        found_paths: set[str] = set(re.findall(r"^\s{0,4}(/\w[\w/]*)\s*:", raml_text, re.MULTILINE))
+        # Also capture leaf names like "add", "divide" for filtering (strip leading slash)
+        found_names: set[str] = {p.lstrip("/").lower() for p in found_paths}
 
         prompt = (
             "Review the following RAML 1.0 specification for a Calculator API. "
             "Verify: title/version present, base URI, mediaType, OAuth2 security scheme, "
             "request/response types, hasStandardErrors trait, examples, naming, idempotency, "
-            "and presence of all four endpoints (add, subtract, multiply, divide)."
-            f"{verified_paths_note}\n"
+            "and presence of all four endpoints (add, subtract, multiply, divide).\n\n"
             f"```raml\n{raml_text[:6000]}\n```"
         )
         result = self._traced_ask_json(prompt)
-        findings = [self._finding(f) for f in result.get("findings", []) if isinstance(f, dict)]
+        raw_findings = [self._finding(f) for f in result.get("findings", []) if isinstance(f, dict)]
+
+        # Post-filter: remove hallucinated "missing endpoint" findings for paths that
+        # are verifiably present in the RAML text (LLM sometimes reports endpoints as
+        # missing even when they appear in the spec).
+        findings = [
+            f for f in raw_findings
+            if not self._is_false_missing_endpoint(f.title, found_names)
+        ]
         if not findings:
             findings = [
                 AgentFinding(
@@ -70,3 +73,12 @@ class APIDesignAgent(BaseAgent):
             detail=data.get("detail", ""),
             recommendation=data.get("recommendation"),
         )
+
+    @staticmethod
+    def _is_false_missing_endpoint(title: str, found_names: set[str]) -> bool:
+        """Return True if the finding title claims an endpoint is missing but the
+        endpoint name is actually present in the verified RAML path set."""
+        t = title.lower()
+        if "missing" not in t and "absent" not in t and "not found" not in t:
+            return False
+        return any(name in t for name in found_names)
