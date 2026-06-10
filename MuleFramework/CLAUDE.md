@@ -142,6 +142,22 @@ cleans up after the request.
 
 ## Changelog
 
+### 2026-06-10 (patch — security findings + MUnit score fix + UI alignment)
+- **Backend: Security agent findings enriched** — `security_agent.py` `role` and user
+  prompt now explicitly require `detail` and `recommendation` in every finding (same
+  fix applied earlier to mule_review, munit, performance).
+- **Backend: MUnit score fix** — when tests are loaded from MUnit definition files
+  (`src/test/munit/`) and coverage is 0% (no CI execution JSON), the agent no longer
+  penalises the score for missing coverage, and the prompt instructs the LLM not to
+  raise critical/high coverage findings. Derived score is now `pass_rate` only in
+  this case (was `0.7 * pass_rate + 0.3 * 0 = 70` but with critical coverage findings).
+- **UI: Footer + subtitle updated** — `App.tsx` footer and `Header.tsx` subtitle now
+  say `mule-validation-hub` instead of `MuleSoft AI Validation Dashboard` /
+  `AI-POWERED RELEASE READINESS PIPELINE`.
+- **UI: InputPanel banner fixed** — removed misleading warning that `src/test/munit/`
+  is "the wrong directory". Banner now correctly states both surefire reports and
+  MUnit definition files are accepted.
+
 ### 2026-06-10 (patch — rich agent findings + app rename)
 - **UI: App renamed** — `Header.tsx` title changed from "AI Validation Dashboard"
   to `mule-validation-hub`

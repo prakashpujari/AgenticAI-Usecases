@@ -158,7 +158,7 @@ export default function App() {
           fontSize: '0.72rem',
           letterSpacing: '0.04em',
         }}>
-          MuleSoft AI Validation Dashboard · LangGraph + Groq LLM · 6-Agent Pipeline
+          mule-validation-hub · LangGraph + Groq LLM · 6-Agent Pipeline
         </footer>
       </div>
     </div>

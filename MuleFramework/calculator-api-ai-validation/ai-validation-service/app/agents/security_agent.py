@@ -14,7 +14,11 @@ class SecurityAgent(BaseAgent):
         "Assess OAuth2 enforcement, JWT validation (issuer/audience/expiry), "
         "client-id enforcement, JSON threat protection (body size, depth, key count), "
         "and rate limiting. Verify that MUnit security tests cover invalid JWT, "
-        "expired JWT, and missing client_id. Return JSON: score, summary, findings[]."
+        "expired JWT, and missing client_id. "
+        "Return findings as JSON with keys: score (0-100), summary, findings[]. "
+        "Each finding MUST have: severity (info|low|medium|high|critical), title, "
+        "detail (specific security gap or risk observed), "
+        "recommendation (concrete remediation step — e.g. add JWKS rotation, enforce TLS 1.3, set rate-limit headers)."
     )
 
     def run(self, state: dict[str, Any]) -> AgentReport:
@@ -35,7 +39,9 @@ class SecurityAgent(BaseAgent):
             "- token-bucket rate limiting per client_id per minute\n\n"
             f"Security MUnit tests detected: {security_tests or 'none'}\n\n"
             f"Prior agent context:\n{prior_summaries}\n\n"
-            "Provide a JSON report scoring the security posture."
+            "Provide a JSON report scoring the security posture. "
+            "Each finding must include severity, title, "
+            "detail (specific risk or gap), and recommendation (concrete remediation step)."
         )
         result = self._traced_ask_json(prompt)
         findings = [self._finding(f) for f in result.get("findings", []) if isinstance(f, dict)]

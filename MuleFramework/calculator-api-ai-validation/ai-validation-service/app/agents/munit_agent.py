@@ -33,13 +33,20 @@ class MUnitAgent(BaseAgent):
             f"- {s.name}: {s.tests} tests, {s.failures} failures, {s.errors} errors"
             for s in report.suites
         )
+        coverage_context = (
+            " NOTE: coverage is 0% because these tests were loaded from MUnit test-definition "
+            "XML files (src/test/munit/) — no CI execution report was present. "
+            "Do NOT raise findings about zero coverage; focus on test-name gaps and suite completeness instead."
+            if report.coverage_percent == 0.0 and report.total_tests > 0 and report.total_failures == 0
+            else ""
+        )
         prompt = (
             f"MUnit execution summary:\n"
             f"- Total tests: {report.total_tests}\n"
             f"- Failures: {report.total_failures}\n"
             f"- Errors: {report.total_errors}\n"
             f"- Skipped: {report.total_skipped}\n"
-            f"- Application coverage: {report.coverage_percent}%\n\n"
+            f"- Application coverage: {report.coverage_percent}%{coverage_context}\n\n"
             f"Suites:\n{suite_summary}\n\n"
             f"Failure details:\n{failure_summary}\n\n"
             "Provide a JSON report with: score (weight 70% pass-rate, 30% coverage), "
@@ -49,7 +56,12 @@ class MUnitAgent(BaseAgent):
         result = self._traced_ask_json(prompt)
 
         pass_rate = self._pass_rate(report)
-        derived_score = int(round(0.7 * pass_rate + 0.3 * report.coverage_percent))
+        # When coverage is 0% but all tests pass, the tests are from MUnit definition
+        # files with no CI execution data — don't penalise the score for missing coverage.
+        if report.coverage_percent == 0.0 and report.total_tests > 0 and report.total_failures == 0:
+            derived_score = int(round(pass_rate))
+        else:
+            derived_score = int(round(0.7 * pass_rate + 0.3 * report.coverage_percent))
         score = self._coerce_score(result, default=derived_score)
 
         findings: list[AgentFinding] = []

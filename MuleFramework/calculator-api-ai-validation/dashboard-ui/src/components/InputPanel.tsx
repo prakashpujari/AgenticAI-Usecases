@@ -53,7 +53,7 @@ const URL_SOURCE_FIELDS: FieldDef[] = [
     placeholder: 'https://github.com/org/repo/tree/main/path/to/sample_reports',
     icon: '🔗',
     mono: true,
-    hint: 'GitHub tree URL of a folder containing TEST-*.xml surefire reports + munit-coverage.json',
+    hint: 'GitHub tree URL — accepts surefire TEST-*.xml reports or src/test/munit/ definition files',
   },
   {
     key: 'raml_path',
@@ -166,8 +166,7 @@ export function InputPanel({ request, onChange, onRun, loading }: Props) {
               <span style={{ color: '#67e8f9' }}>
                 • <strong>blob/</strong> URLs (single files) → converted to raw content automatically<br />
                 • <strong>tree/</strong> URLs (folders) → all matching files fetched via GitHub API<br />
-                • MUnit reports folder must contain <code style={{ background: 'rgba(0,0,0,0.3)', padding: '0 3px', borderRadius: '3px' }}>TEST-*.xml</code> surefire reports
-                  (not test source files from <code style={{ background: 'rgba(0,0,0,0.3)', padding: '0 3px', borderRadius: '3px' }}>src/test/munit/</code>)
+                • MUnit folder accepts <code style={{ background: 'rgba(0,0,0,0.3)', padding: '0 3px', borderRadius: '3px' }}>TEST-*.xml</code> surefire reports <strong>or</strong> <code style={{ background: 'rgba(0,0,0,0.3)', padding: '0 3px', borderRadius: '3px' }}>src/test/munit/</code> definition files
               </span>
             </div>
           </div>

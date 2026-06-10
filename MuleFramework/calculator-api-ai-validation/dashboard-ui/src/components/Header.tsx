@@ -7,7 +7,7 @@ export function Header({ application, runtime }: Props) {
   const appLabel = application?.trim() || 'API';
   const subtitle = runtime?.trim()
     ? `${appLabel.toUpperCase()} · RUNTIME ${runtime} · RELEASE READINESS`
-    : 'AI-POWERED RELEASE READINESS PIPELINE';
+    : 'MULE-VALIDATION-HUB · AI RELEASE READINESS PIPELINE';
 
   return (
     <header style={{
