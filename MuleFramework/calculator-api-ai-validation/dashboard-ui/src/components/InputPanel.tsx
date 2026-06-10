@@ -4,7 +4,7 @@ import type { PipelineRequest } from '../types';
 interface Props {
   request: PipelineRequest;
   onChange: (r: PipelineRequest) => void;
-  onRun: () => void;
+  onRun: (forceDemoMode?: boolean) => void;
   loading: boolean;
 }
 
