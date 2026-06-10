@@ -9,12 +9,13 @@ deployment recommendation (APPROVED / CONDITIONAL / BLOCKED).
 
 ## Live URLs
 
-| Service | URL |
-|---|---|
-| **Frontend (Vercel)** | https://mule-ai-validation-dashboard.vercel.app |
-| **Backend API (Render)** | https://mule-ai-validation.onrender.com |
-| Backend health | https://mule-ai-validation.onrender.com/health |
-| Backend docs (Swagger) | https://mule-ai-validation.onrender.com/docs |
+| Service | URL | Notes |
+|---|---|---|
+| **Frontend — git-linked (Vercel)** | https://mule-ai-validation-dashboard.vercel.app | Auto-deploys on every push to `main` |
+| **Frontend — CLI project (Vercel)** | https://dashboard-ui-eta-pearl.vercel.app | Deployed via `vercel --prod` from `dashboard-ui/` |
+| **Backend API (Render)** | https://mule-ai-validation.onrender.com | Auto-deploys on every push to `main` (Docker) |
+| Backend health | https://mule-ai-validation.onrender.com/health | Keep-alive ping target |
+| Backend docs (Swagger) | https://mule-ai-validation.onrender.com/docs | Interactive API docs |
 
 > The frontend keeps the Render free-tier backend alive by pinging `/health`
 > every 10 minutes from a `useEffect` in `App.tsx`.
