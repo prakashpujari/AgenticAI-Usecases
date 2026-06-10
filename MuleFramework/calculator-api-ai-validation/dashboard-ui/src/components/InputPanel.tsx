@@ -1,3 +1,4 @@
+import { useState } from 'react';
 import type { PipelineRequest } from '../types';
 
 interface Props {
@@ -7,7 +8,18 @@ interface Props {
   loading: boolean;
 }
 
-const fields: { key: keyof PipelineRequest; label: string; placeholder: string; icon: string; mono?: boolean; hint?: string }[] = [
+type InputMode = 'path' | 'url';
+
+type FieldDef = {
+  key: keyof PipelineRequest;
+  label: string;
+  placeholder: string;
+  icon: string;
+  mono?: boolean;
+  hint?: string;
+};
+
+const PATH_SOURCE_FIELDS: FieldDef[] = [
   {
     key: 'munit_reports_dir',
     label: 'MUnit Reports Directory',
@@ -32,6 +44,36 @@ const fields: { key: keyof PipelineRequest; label: string; placeholder: string; 
     mono: true,
     hint: 'Directory containing Mule flow XML configuration files (blank = demo data)',
   },
+];
+
+const URL_SOURCE_FIELDS: FieldDef[] = [
+  {
+    key: 'munit_reports_dir',
+    label: 'MUnit Report URL',
+    placeholder: 'https://raw.githubusercontent.com/org/repo/main/TEST-report.xml',
+    icon: '🔗',
+    mono: true,
+    hint: 'Direct URL to a MUnit XML report file (GitHub raw, HTTP endpoint, etc.)',
+  },
+  {
+    key: 'raml_path',
+    label: 'RAML Spec URL',
+    placeholder: 'https://raw.githubusercontent.com/org/repo/main/api.raml',
+    icon: '🔗',
+    mono: true,
+    hint: 'Direct URL to your RAML 1.0 API specification file',
+  },
+  {
+    key: 'mule_xml_dir',
+    label: 'Mule XML URL',
+    placeholder: 'https://raw.githubusercontent.com/org/repo/main/mule-flow.xml',
+    icon: '🔗',
+    mono: true,
+    hint: 'Direct URL to a Mule flow XML file',
+  },
+];
+
+const META_FIELDS: FieldDef[] = [
   {
     key: 'application',
     label: 'Application Name',
@@ -49,144 +91,248 @@ const fields: { key: keyof PipelineRequest; label: string; placeholder: string; 
 ];
 
 export function InputPanel({ request, onChange, onRun, loading }: Props) {
+  const [inputMode, setInputMode] = useState<InputMode>('path');
   const set = (key: keyof PipelineRequest, value: string) =>
     onChange({ ...request, [key]: value });
 
+  const sourceFields = inputMode === 'url' ? URL_SOURCE_FIELDS : PATH_SOURCE_FIELDS;
+  const allFields = [...sourceFields, ...META_FIELDS];
+
   return (
     <div style={{
-      background: 'linear-gradient(135deg, #161b2e 0%, #12172a 100%)',
-      border: '1px solid rgba(139,92,246,0.2)',
-      borderRadius: '20px',
+      background: 'linear-gradient(135deg, #13172a 0%, #0f1220 100%)',
+      border: '1px solid rgba(139,92,246,0.22)',
+      borderRadius: '22px',
       padding: '2rem',
-      boxShadow: '0 4px 32px rgba(0,0,0,0.4), inset 0 1px 0 rgba(255,255,255,0.04)',
+      boxShadow: '0 8px 48px rgba(0,0,0,0.45), inset 0 1px 0 rgba(255,255,255,0.05)',
       position: 'relative',
       overflow: 'hidden',
     }}>
       {/* Background glow orb */}
       <div style={{
-        position: 'absolute', top: '-60px', right: '-60px',
+        position: 'absolute', top: '-70px', right: '-70px',
+        width: '240px', height: '240px', borderRadius: '50%',
+        background: 'radial-gradient(circle, rgba(124,58,237,0.1) 0%, transparent 70%)',
+        pointerEvents: 'none',
+      }} />
+      <div style={{
+        position: 'absolute', bottom: '-50px', left: '-50px',
         width: '200px', height: '200px', borderRadius: '50%',
-        background: 'radial-gradient(circle, rgba(124,58,237,0.08) 0%, transparent 70%)',
+        background: 'radial-gradient(circle, rgba(8,145,178,0.07) 0%, transparent 70%)',
         pointerEvents: 'none',
       }} />
 
       {/* Section header */}
-      <div style={{ display: 'flex', alignItems: 'center', gap: '0.875rem', marginBottom: '1.75rem' }}>
-        <div style={{
-          width: '36px', height: '36px', borderRadius: '10px',
-          background: 'linear-gradient(135deg, rgba(124,58,237,0.3), rgba(79,70,229,0.2))',
-          border: '1px solid rgba(124,58,237,0.35)',
-          display: 'flex', alignItems: 'center', justifyContent: 'center',
-          fontSize: '1rem',
-        }}>
-          ⚙️
+      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: '1rem', marginBottom: '1.5rem', flexWrap: 'wrap' }}>
+        <div style={{ display: 'flex', alignItems: 'center', gap: '0.875rem' }}>
+          <div style={{
+            width: '38px', height: '38px', borderRadius: '10px', flexShrink: 0,
+            background: 'linear-gradient(135deg, rgba(124,58,237,0.35), rgba(79,70,229,0.22))',
+            border: '1px solid rgba(124,58,237,0.4)',
+            display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: '1.1rem',
+            boxShadow: '0 0 16px rgba(124,58,237,0.2)',
+          }}>
+            ⚙️
+          </div>
+          <div>
+            <h2 style={{ color: '#f1f5f9', fontSize: '1rem', fontWeight: 700, margin: 0, letterSpacing: '-0.01em' }}>
+              Pipeline Configuration
+            </h2>
+            <p style={{ color: '#475569', fontSize: '0.72rem', margin: 0, marginTop: '0.15rem' }}>
+              Configure paths or URLs for your validation run
+            </p>
+          </div>
         </div>
-        <div>
-          <h2 style={{ color: '#f1f5f9', fontSize: '1rem', fontWeight: 700, margin: 0, letterSpacing: '-0.01em' }}>
-            Pipeline Configuration
-          </h2>
-          <p style={{ color: '#475569', fontSize: '0.72rem', margin: 0, marginTop: '0.15rem' }}>
-            Configure paths and settings for your validation run
-          </p>
-        </div>
+
+        {/* Input mode toggle */}
+        <ModeToggle mode={inputMode} onChange={setInputMode} />
       </div>
 
+      {/* URL mode info banner */}
+      {inputMode === 'url' && (
+        <div style={{
+          display: 'flex', alignItems: 'center', gap: '0.625rem',
+          padding: '0.625rem 1rem', borderRadius: '10px',
+          background: 'linear-gradient(135deg, rgba(8,145,178,0.1), rgba(6,182,212,0.06))',
+          border: '1px solid rgba(8,145,178,0.25)',
+          marginBottom: '1.25rem',
+          fontSize: '0.75rem', color: '#67e8f9',
+        }}>
+          <span style={{ fontSize: '1rem', flexShrink: 0 }}>ℹ️</span>
+          <span>
+            Paste direct download URLs (e.g. GitHub raw links). Each URL must point to a single file.
+            Leave blank to use bundled demo data.
+          </span>
+        </div>
+      )}
+
       {/* Fields grid */}
-      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(340px, 1fr))', gap: '1.125rem', marginBottom: '1.75rem' }}>
-        {fields.map(({ key, label, placeholder, icon, mono, hint }) => (
+      <div style={{
+        display: 'grid',
+        gridTemplateColumns: 'repeat(auto-fit, minmax(340px, 1fr))',
+        gap: '1.125rem', marginBottom: '1.75rem',
+      }}>
+        {allFields.map(({ key, label, placeholder, icon, mono, hint }) => (
           <FieldInput
-            key={key}
+            key={`${inputMode}-${key}`}
             label={label}
             icon={icon}
             hint={hint}
             value={request[key]}
             placeholder={placeholder}
             mono={mono}
+            isUrl={inputMode === 'url' && key !== 'application' && key !== 'runtime'}
             onChange={v => set(key, v)}
           />
         ))}
       </div>
 
       {/* Run button */}
-      <div style={{ display: 'flex', justifyContent: 'stretch' }}>
-        <button
-          onClick={onRun}
-          disabled={loading}
-          style={{
-            width: '100%',
-            display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '0.625rem',
-            padding: '0.9rem 2rem', borderRadius: '12px', fontWeight: 700,
-            fontSize: '1rem', cursor: loading ? 'not-allowed' : 'pointer',
-            background: loading
-              ? 'rgba(55,65,81,0.5)'
-              : 'linear-gradient(135deg, #7c3aed 0%, #4f46e5 50%, #0891b2 100%)',
-            color: loading ? '#6b7280' : 'white', border: 'none',
-            boxShadow: loading ? 'none' : '0 4px 24px rgba(124,58,237,0.45), 0 0 0 1px rgba(124,58,237,0.3)',
-            transition: 'all 0.25s ease',
-            letterSpacing: '0.01em',
-            fontFamily: 'Inter, system-ui, sans-serif',
-          }}
-        >
-          {loading ? (
-            <>
-              <Spinner />
-              Running Pipeline…
-            </>
-          ) : (
-            <>
-              <PlayIcon />
-              Run Validation
-            </>
-          )}
-        </button>
-      </div>
+      <button
+        onClick={onRun}
+        disabled={loading}
+        style={{
+          width: '100%',
+          display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '0.625rem',
+          padding: '0.95rem 2rem', borderRadius: '13px', fontWeight: 700,
+          fontSize: '1rem', cursor: loading ? 'not-allowed' : 'pointer',
+          background: loading
+            ? 'rgba(40,46,65,0.8)'
+            : 'linear-gradient(135deg, #7c3aed 0%, #4f46e5 50%, #0891b2 100%)',
+          backgroundSize: loading ? 'auto' : '200% auto',
+          color: loading ? '#4b5563' : 'white', border: 'none',
+          boxShadow: loading ? 'none' : '0 4px 28px rgba(124,58,237,0.5), 0 0 0 1px rgba(124,58,237,0.35)',
+          transition: 'all 0.25s ease',
+          letterSpacing: '0.01em',
+          fontFamily: 'Inter, system-ui, sans-serif',
+          position: 'relative', overflow: 'hidden',
+        }}
+      >
+        {!loading && (
+          <div style={{
+            position: 'absolute', inset: 0,
+            background: 'linear-gradient(135deg, rgba(255,255,255,0) 0%, rgba(255,255,255,0.08) 50%, rgba(255,255,255,0) 100%)',
+            pointerEvents: 'none',
+          }} />
+        )}
+        {loading ? (
+          <>
+            <Spinner />
+            Running Pipeline…
+          </>
+        ) : (
+          <>
+            <PlayIcon />
+            Run Validation Pipeline
+          </>
+        )}
+      </button>
 
       <style>{`
-        @keyframes spinBtn { to { transform: rotate(360deg); } }
         .field-input:focus {
           border-color: #7c3aed !important;
-          box-shadow: 0 0 0 3px rgba(124,58,237,0.18) !important;
+          box-shadow: 0 0 0 3px rgba(124,58,237,0.2) !important;
+          background: rgba(10,12,22,0.95) !important;
         }
+        .field-input-url:focus {
+          border-color: #0891b2 !important;
+          box-shadow: 0 0 0 3px rgba(8,145,178,0.2) !important;
+          background: rgba(10,12,22,0.95) !important;
+        }
+        .mode-btn:hover { opacity: 0.9; }
       `}</style>
     </div>
   );
 }
 
+/* ── Mode Toggle ── */
+function ModeToggle({ mode, onChange }: { mode: InputMode; onChange: (m: InputMode) => void }) {
+  return (
+    <div style={{
+      display: 'flex', gap: '0.25rem',
+      background: 'rgba(0,0,0,0.4)',
+      borderRadius: '11px', padding: '0.25rem',
+      border: '1px solid rgba(255,255,255,0.06)',
+    }}>
+      {(['path', 'url'] as InputMode[]).map(m => {
+        const active = mode === m;
+        const isUrl = m === 'url';
+        const activeColor = isUrl ? '#06b6d4' : '#a78bfa';
+        const activeBg = isUrl
+          ? 'linear-gradient(135deg, rgba(8,145,178,0.35), rgba(6,182,212,0.22))'
+          : 'linear-gradient(135deg, rgba(124,58,237,0.35), rgba(79,70,229,0.22))';
+        return (
+          <button
+            key={m}
+            className="mode-btn"
+            onClick={() => onChange(m)}
+            style={{
+              padding: '0.45rem 1.1rem', borderRadius: '8px', border: 'none',
+              cursor: 'pointer', fontWeight: 600, fontSize: '0.78rem',
+              background: active ? activeBg : 'transparent',
+              color: active ? activeColor : '#475569',
+              boxShadow: active ? `0 0 12px ${activeColor}25` : 'none',
+              transition: 'all 0.2s ease',
+              display: 'flex', alignItems: 'center', gap: '0.375rem',
+              fontFamily: 'Inter, system-ui, sans-serif',
+            }}
+          >
+            <span>{isUrl ? '🔗' : '📁'}</span>
+            {isUrl ? 'URLs' : 'Folder Paths'}
+          </button>
+        );
+      })}
+    </div>
+  );
+}
+
+/* ── Field Input ── */
 function FieldInput({
-  label, icon, hint, value, placeholder, mono, onChange,
+  label, icon, hint, value, placeholder, mono, isUrl, onChange,
 }: {
   label: string; icon: string; hint?: string; value: string;
-  placeholder: string; mono?: boolean; onChange: (v: string) => void;
+  placeholder: string; mono?: boolean; isUrl?: boolean;
+  onChange: (v: string) => void;
 }) {
+  const accentColor = isUrl ? '#06b6d4' : '#7c3aed';
   return (
     <div>
       <label style={{
         display: 'flex', alignItems: 'center', gap: '0.4rem',
-        fontSize: '0.72rem', fontWeight: 600, color: '#94a3b8',
-        marginBottom: '0.45rem', letterSpacing: '0.06em',
+        fontSize: '0.7rem', fontWeight: 700, color: isUrl ? '#67e8f9' : '#94a3b8',
+        marginBottom: '0.45rem', letterSpacing: '0.07em',
       }}>
         <span style={{ fontSize: '0.85rem' }}>{icon}</span>
         {label.toUpperCase()}
       </label>
-      <input
-        type="text"
-        className="field-input"
-        value={value}
-        onChange={e => onChange(e.target.value)}
-        placeholder={placeholder}
-        style={{
-          width: '100%', padding: '0.65rem 0.875rem',
-          background: 'rgba(15,17,23,0.8)',
-          border: '1px solid rgba(255,255,255,0.1)',
-          borderRadius: '10px', color: '#e2e8f0', outline: 'none',
-          fontFamily: mono ? 'ui-monospace, Consolas, "Courier New", monospace' : 'Inter, system-ui, sans-serif',
-          fontSize: '0.8rem',
-          transition: 'border-color 0.2s, box-shadow 0.2s',
-          boxSizing: 'border-box',
-        }}
-      />
+      <div style={{ position: 'relative' }}>
+        <input
+          type={isUrl ? 'url' : 'text'}
+          className={isUrl ? 'field-input-url' : 'field-input'}
+          value={value}
+          onChange={e => onChange(e.target.value)}
+          placeholder={placeholder}
+          style={{
+            width: '100%', padding: '0.65rem 0.875rem',
+            background: 'rgba(10,12,22,0.85)',
+            border: `1px solid ${isUrl ? 'rgba(8,145,178,0.2)' : 'rgba(255,255,255,0.1)'}`,
+            borderRadius: '10px', color: '#e2e8f0', outline: 'none',
+            fontFamily: mono ? 'ui-monospace, Consolas, "Courier New", monospace' : 'Inter, system-ui, sans-serif',
+            fontSize: '0.8rem',
+            transition: 'border-color 0.2s, box-shadow 0.2s, background 0.2s',
+            boxSizing: 'border-box',
+          }}
+        />
+        {value && (
+          <div style={{
+            position: 'absolute', right: '10px', top: '50%', transform: 'translateY(-50%)',
+            width: '6px', height: '6px', borderRadius: '50%',
+            background: accentColor, boxShadow: `0 0 6px ${accentColor}`,
+          }} />
+        )}
+      </div>
       {hint && (
-        <p style={{ fontSize: '0.67rem', color: '#374151', marginTop: '0.3rem', marginLeft: '0.1rem' }}>
+        <p style={{ fontSize: '0.67rem', color: '#2d3748', marginTop: '0.3rem', marginLeft: '0.1rem', lineHeight: 1.4 }}>
           {hint}
         </p>
       )}
@@ -205,9 +351,9 @@ function PlayIcon() {
 function Spinner() {
   return (
     <div style={{
-      width: '16px', height: '16px', border: '2px solid rgba(255,255,255,0.25)',
-      borderTopColor: 'rgba(255,255,255,0.7)', borderRadius: '50%',
-      animation: 'spinBtn 0.75s linear infinite', flexShrink: 0,
+      width: '16px', height: '16px', border: '2px solid rgba(255,255,255,0.2)',
+      borderTopColor: 'rgba(255,255,255,0.6)', borderRadius: '50%',
+      animation: 'spin 0.75s linear infinite', flexShrink: 0,
     }} />
   );
 }

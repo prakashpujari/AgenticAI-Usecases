@@ -3,6 +3,15 @@ import { ScoreRing, scoreColor } from './ScoreRing';
 import { RecommendationBadge } from './RecommendationBadge';
 import { AgentCard } from './AgentCard';
 
+function overallGrade(score: number): { label: string; color: string } {
+  if (score >= 95) return { label: 'A+', color: '#22c55e' };
+  if (score >= 85) return { label: 'A',  color: '#4ade80' };
+  if (score >= 75) return { label: 'B+', color: '#86efac' };
+  if (score >= 65) return { label: 'B',  color: '#fbbf24' };
+  if (score >= 50) return { label: 'C',  color: '#f97316' };
+  return                     { label: 'D',  color: '#ef4444' };
+}
+
 interface Props {
   result: PipelineResponse;
   elapsed: number | null;
@@ -25,16 +34,14 @@ export function Dashboard({ result, elapsed }: Props) {
     agentScoreMap[r.agent] = r.score;
   }
 
+  const grade = overallGrade(dashboard.productionReadiness);
+
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: '1.5rem', fontFamily: 'Inter, system-ui, sans-serif' }}>
       <style>{`
-        @keyframes fadeSlideUp {
-          from { opacity: 0; transform: translateY(16px); }
-          to   { opacity: 1; transform: translateY(0); }
-        }
-        .dash-section {
-          animation: fadeSlideUp 0.4s ease forwards;
-        }
+        .dash-section { animation: fadeSlideUp 0.4s ease forwards; }
+        .stat-tile:hover { transform: translateY(-2px); box-shadow: 0 8px 32px rgba(0,0,0,0.4) !important; }
+        .stat-tile { transition: transform 0.2s ease, box-shadow 0.2s ease; }
       `}</style>
 
       {/* ── 1. Recommendation Banner (full width) ── */}
@@ -61,6 +68,15 @@ export function Dashboard({ result, elapsed }: Props) {
         <div style={{ display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between', gap: '1rem', flexWrap: 'wrap', marginBottom: '1rem' }}>
           <SectionTitle icon="📋">Executive Summary</SectionTitle>
           <div style={{ display: 'flex', gap: '0.5rem', alignItems: 'center', flexWrap: 'wrap' }}>
+            {/* Overall Grade badge */}
+            <span style={{
+              fontSize: '0.8rem', fontWeight: 900, padding: '0.25rem 0.7rem',
+              borderRadius: '8px', background: `${grade.color}18`,
+              color: grade.color, border: `1px solid ${grade.color}40`,
+              letterSpacing: '0.04em', boxShadow: `0 0 10px ${grade.color}20`,
+            }}>
+              Grade: {grade.label}
+            </span>
             {elapsed !== null && (
               <span style={{
                 fontSize: '0.7rem', color: '#475569',
@@ -113,34 +129,18 @@ export function Dashboard({ result, elapsed }: Props) {
       </div>
 
       {/* ── 4. Test Stats row ── */}
-      <div className="dash-section" style={{ animationDelay: '180ms', display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(180px, 1fr))', gap: '1rem' }}>
-        <StatTile
-          label="Tests Executed"
-          value={artifacts.munit_total}
-          icon="🧪"
-          accentColor="#60a5fa"
-        />
-        <StatTile
-          label="Tests Passed"
-          value={dashboard.testsPassed}
-          icon="✅"
-          accentColor="#4ade80"
-          sub={`${dashboard.passRate}% pass rate`}
-        />
-        <StatTile
-          label="Tests Failed"
-          value={dashboard.testsFailed}
-          icon="❌"
+      <div className="dash-section" style={{ animationDelay: '180ms', display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(190px, 1fr))', gap: '1rem' }}>
+        <StatTile label="Tests Executed" value={artifacts.munit_total}         icon="🧪" accentColor="#60a5fa" />
+        <StatTile label="Tests Passed"   value={dashboard.testsPassed}         icon="✅" accentColor="#4ade80"
+          sub={`${dashboard.passRate}% pass rate`} />
+        <StatTile label="Tests Failed"   value={dashboard.testsFailed}         icon="❌"
           accentColor={dashboard.testsFailed > 0 ? '#f87171' : '#4ade80'}
-          sub={dashboard.testsFailed > 0 ? 'needs attention' : 'all passing'}
-        />
-        <StatTile
-          label="Coverage"
-          value={`${artifacts.munit_coverage}%`}
-          icon="🎯"
+          sub={dashboard.testsFailed > 0 ? 'needs attention' : 'all passing'} />
+        <StatTile label="Coverage"       value={`${artifacts.munit_coverage}%`} icon="🎯"
           accentColor={artifacts.munit_coverage >= 80 ? '#4ade80' : artifacts.munit_coverage >= 60 ? '#fbbf24' : '#f87171'}
-          sub="code coverage"
-        />
+          sub="code coverage" />
+        <StatTile label="Production Score" value={dashboard.productionReadiness} icon="🚀"
+          accentColor={grade.color} sub={`Grade ${grade.label}`} />
       </div>
 
       {/* ── 5. Agent Pipeline bar ── */}
@@ -242,13 +242,14 @@ function StatTile({ label, value, icon, accentColor, sub }: {
   accentColor: string; sub?: string;
 }) {
   return (
-    <div style={{
-      background: 'linear-gradient(135deg, #161b2e 0%, #12172a 100%)',
-      border: `1px solid ${accentColor}22`,
+    <div className="stat-tile" style={{
+      background: 'linear-gradient(135deg, #13172a 0%, #0f1220 100%)',
+      border: `1px solid ${accentColor}28`,
       borderRadius: '16px',
       padding: '1.375rem 1.5rem',
-      boxShadow: `0 4px 24px rgba(0,0,0,0.3), 0 0 0 1px ${accentColor}15`,
+      boxShadow: `0 4px 24px rgba(0,0,0,0.35), 0 0 0 1px ${accentColor}15`,
       position: 'relative', overflow: 'hidden',
+      cursor: 'default',
     }}>
       {/* Accent top bar */}
       <div style={{
