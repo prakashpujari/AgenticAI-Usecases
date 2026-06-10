@@ -56,13 +56,18 @@ class MUnitAgent(BaseAgent):
         result = self._traced_ask_json(prompt)
 
         pass_rate = self._pass_rate(report)
-        # When coverage is 0% but all tests pass, the tests are from MUnit definition
-        # files with no CI execution data — don't penalise the score for missing coverage.
-        if report.coverage_percent == 0.0 and report.total_tests > 0 and report.total_failures == 0:
-            derived_score = int(round(pass_rate))
+        definition_files_mode = (
+            report.coverage_percent == 0.0
+            and report.total_tests > 0
+            and report.total_failures == 0
+        )
+        if definition_files_mode:
+            # Tests loaded from src/test/munit/ definition files — no CI execution data.
+            # Ignore LLM score (LLM sees 0% coverage and rates low); use pass_rate directly.
+            score = int(round(pass_rate))
         else:
             derived_score = int(round(0.7 * pass_rate + 0.3 * report.coverage_percent))
-        score = self._coerce_score(result, default=derived_score)
+            score = self._coerce_score(result, default=derived_score)
 
         findings: list[AgentFinding] = []
         for f in result.get("findings", []):
