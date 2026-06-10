@@ -73,8 +73,8 @@ _GH_TREE = re.compile(
 _GH_API_HEADERS = {"Accept": "application/vnd.github+json", "X-GitHub-Api-Version": "2022-11-28"}
 
 
-def _is_url(value: str) -> bool:
-    return value.startswith(("http://", "https://"))
+def _is_url(value) -> bool:
+    return str(value).startswith(("http://", "https://"))
 
 
 def _resolve_github_file_url(url: str) -> str:
@@ -271,7 +271,7 @@ def validate(req: PipelineRequest) -> PipelineResponse:
     try:
         # ── Resolve munit_reports_dir ──────────────────────────────────────
         # Accepts: local path | raw URL (single XML) | GitHub tree URL (directory)
-        munit_raw = req.munit_reports_dir or settings.munit_reports_dir
+        munit_raw = str(req.munit_reports_dir or settings.munit_reports_dir)
         if _is_url(munit_raw):
             if _GH_TREE.match(munit_raw):
                 # GitHub directory → fetch all XML + coverage JSON via API
@@ -286,7 +286,7 @@ def validate(req: PipelineRequest) -> PipelineResponse:
 
         # ── Resolve raml_path ──────────────────────────────────────────────
         # Accepts: local path | raw URL | GitHub blob URL (auto-converted to raw)
-        raml_raw = req.raml_path or settings.raml_path
+        raml_raw = str(req.raml_path or settings.raml_path)
         if _is_url(raml_raw):
             # _download_to_temp_file calls _resolve_github_file_url internally
             raml_path = _download_to_temp_file(raml_raw, suffix=".raml")
@@ -296,7 +296,7 @@ def validate(req: PipelineRequest) -> PipelineResponse:
 
         # ── Resolve mule_xml_dir ───────────────────────────────────────────
         # Accepts: local path | raw URL (single XML) | GitHub tree URL (directory)
-        mule_raw = req.mule_xml_dir or settings.mule_xml_dir
+        mule_raw = str(req.mule_xml_dir or settings.mule_xml_dir)
         if _is_url(mule_raw):
             if _GH_TREE.match(mule_raw):
                 mule_dir = _download_github_tree_to_temp_dir(mule_raw, ["*.xml"])
