@@ -13,7 +13,10 @@ class MUnitAgent(BaseAgent):
     role = (
         "You are an SDET reviewing a MuleSoft MUnit test execution report. "
         "Compute coverage gaps, classify failures, suggest missing tests, and "
-        "produce a JSON report with: score (0-100), summary, findings[]."
+        "produce a JSON report with: score (0-100), summary, findings[]. "
+        "Each finding MUST have: severity (info|low|medium|high|critical), title, "
+        "detail (specific explanation of the issue, gap, or failure root-cause), "
+        "recommendation (concrete actionable next step to resolve or improve coverage)."
     )
 
     def run(self, state: dict[str, Any]) -> AgentReport:
@@ -40,7 +43,8 @@ class MUnitAgent(BaseAgent):
             f"Suites:\n{suite_summary}\n\n"
             f"Failure details:\n{failure_summary}\n\n"
             "Provide a JSON report with: score (weight 70% pass-rate, 30% coverage), "
-            "summary, findings[] including root-cause hypothesis for each failure."
+            "summary, findings[]. Each finding must include severity, title, "
+            "detail (specific root-cause or gap explanation), and recommendation (concrete fix step)."
         )
         result = self._traced_ask_json(prompt)
 

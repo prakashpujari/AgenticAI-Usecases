@@ -1,4 +1,4 @@
-# MuleFramework — AI Validation Dashboard
+# MuleFramework — mule-validation-hub
 
 AI-powered MuleSoft release-readiness platform. Parses MUnit test reports,
 runs a **LangGraph 6-agent pipeline** powered by **Groq llama-3.3-70b-versatile**
@@ -141,6 +141,16 @@ cleans up after the request.
 ---
 
 ## Changelog
+
+### 2026-06-10 (patch — rich agent findings + app rename)
+- **UI: App renamed** — `Header.tsx` title changed from "AI Validation Dashboard"
+  to `mule-validation-hub`
+- **Backend: Agent findings enriched** — `mule_review`, `munit`, and `performance`
+  agent `role` prompts now explicitly require `detail` and `recommendation` fields
+  in every finding (matching `api_design` agent format). Previously only `severity`
+  and `title` were returned, making the AgentCard expand panel appear empty.
+- User-level prompts for `munit` and `performance` agents also reinforced to
+  request the structured finding format.
 
 ### 2026-06-10 (patch — MUnit definition parser)
 - **Backend: MUnit definition XML support** — `munit_parser.py` now has a

@@ -61,7 +61,7 @@ export function Header({ application, runtime }: Props) {
               backgroundSize: '200% auto',
               animation: 'shimmerText 5s linear infinite',
             }}>
-              AI Validation Dashboard
+              mule-validation-hub
             </h1>
             <p style={{
               fontSize: '0.68rem', margin: 0, marginTop: '0.18rem',

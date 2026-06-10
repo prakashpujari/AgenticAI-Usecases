@@ -15,7 +15,11 @@ class MuleReviewAgent(BaseAgent):
         "best practices: separation of concerns (main / impl / error / security / "
         "observability), use of APIKit, DataWeave, global error handlers, "
         "secure-properties, logging hygiene, no business logic in main flow, "
-        "and proper sub-flow vs flow choices. Return JSON: score, summary, findings[]."
+        "and proper sub-flow vs flow choices. "
+        "Return findings as JSON with keys: score (0-100), summary, findings[]. "
+        "Each finding MUST have: severity (info|low|medium|high|critical), title, "
+        "detail (specific explanation of the issue observed in the XML code), "
+        "recommendation (concrete actionable fix or improvement step)."
     )
 
     def run(self, state: dict[str, Any]) -> AgentReport:

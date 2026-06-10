@@ -12,7 +12,11 @@ class PerformanceAgent(BaseAgent):
     role = (
         "You are a performance engineer. Analyse MUnit performance suites that "
         "execute 100 and 1000 concurrent requests, plus runtime latency metrics. "
-        "Score throughput, latency, error rate. Return JSON: score, summary, findings[]."
+        "Score throughput, latency, error rate. "
+        "Return findings as JSON with keys: score (0-100), summary, findings[]. "
+        "Each finding MUST have: severity (info|low|medium|high|critical), title, "
+        "detail (specific latency observation, bottleneck, or risk identified from the data), "
+        "recommendation (concrete tuning action — e.g. increase thread pool, add caching, set timeout)."
     )
 
     def run(self, state: dict[str, Any]) -> AgentReport:
@@ -31,7 +35,8 @@ class PerformanceAgent(BaseAgent):
             "Performance-test observations:\n"
             f"{observed}\n\n"
             "Constraints: 100 concurrent target ≤ p95 200ms; 1000 concurrent target ≤ p95 800ms. "
-            "Produce a JSON report scoring performance and listing any tail-latency risks."
+            "Produce a JSON report scoring performance. Each finding must include severity, title, "
+            "detail (specific latency/throughput observation), and recommendation (concrete tuning step)."
         )
         result = self._traced_ask_json(prompt)
         findings = [self._finding(f) for f in result.get("findings", []) if isinstance(f, dict)]
