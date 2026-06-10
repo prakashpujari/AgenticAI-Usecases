@@ -49,27 +49,27 @@ const PATH_SOURCE_FIELDS: FieldDef[] = [
 const URL_SOURCE_FIELDS: FieldDef[] = [
   {
     key: 'munit_reports_dir',
-    label: 'MUnit Report URL',
-    placeholder: 'https://raw.githubusercontent.com/org/repo/main/TEST-report.xml',
+    label: 'MUnit Reports URL',
+    placeholder: 'https://github.com/org/repo/tree/main/path/to/sample_reports',
     icon: '🔗',
     mono: true,
-    hint: 'Direct URL to a MUnit XML report file (GitHub raw, HTTP endpoint, etc.)',
+    hint: 'GitHub tree URL of a folder containing TEST-*.xml surefire reports + munit-coverage.json',
   },
   {
     key: 'raml_path',
     label: 'RAML Spec URL',
-    placeholder: 'https://raw.githubusercontent.com/org/repo/main/api.raml',
+    placeholder: 'https://github.com/org/repo/blob/main/path/to/api.raml',
     icon: '🔗',
     mono: true,
-    hint: 'Direct URL to your RAML 1.0 API specification file',
+    hint: 'GitHub blob URL (or raw URL) of your RAML 1.0 spec file — auto-converted to raw',
   },
   {
     key: 'mule_xml_dir',
     label: 'Mule XML URL',
-    placeholder: 'https://raw.githubusercontent.com/org/repo/main/mule-flow.xml',
+    placeholder: 'https://github.com/org/repo/tree/main/path/to/mule',
     icon: '🔗',
     mono: true,
-    hint: 'Direct URL to a Mule flow XML file',
+    hint: 'GitHub tree URL (or raw URL) of a folder containing Mule flow XML files',
   },
 ];
 
@@ -151,18 +151,26 @@ export function InputPanel({ request, onChange, onRun, loading }: Props) {
       {/* URL mode info banner */}
       {inputMode === 'url' && (
         <div style={{
-          display: 'flex', alignItems: 'center', gap: '0.625rem',
-          padding: '0.625rem 1rem', borderRadius: '10px',
+          padding: '0.75rem 1rem', borderRadius: '10px',
           background: 'linear-gradient(135deg, rgba(8,145,178,0.1), rgba(6,182,212,0.06))',
           border: '1px solid rgba(8,145,178,0.25)',
           marginBottom: '1.25rem',
           fontSize: '0.75rem', color: '#67e8f9',
         }}>
-          <span style={{ fontSize: '1rem', flexShrink: 0 }}>ℹ️</span>
-          <span>
-            Paste direct download URLs (e.g. GitHub raw links). Each URL must point to a single file.
-            Leave blank to use bundled demo data.
-          </span>
+          <div style={{ display: 'flex', alignItems: 'flex-start', gap: '0.625rem' }}>
+            <span style={{ fontSize: '1rem', flexShrink: 0 }}>ℹ️</span>
+            <div style={{ lineHeight: 1.6 }}>
+              <strong style={{ display: 'block', marginBottom: '0.25rem', color: '#a5f3fc' }}>
+                GitHub URLs are supported and auto-converted
+              </strong>
+              <span style={{ color: '#67e8f9' }}>
+                • <strong>blob/</strong> URLs (single files) → converted to raw content automatically<br />
+                • <strong>tree/</strong> URLs (folders) → all matching files fetched via GitHub API<br />
+                • MUnit reports folder must contain <code style={{ background: 'rgba(0,0,0,0.3)', padding: '0 3px', borderRadius: '3px' }}>TEST-*.xml</code> surefire reports
+                  (not test source files from <code style={{ background: 'rgba(0,0,0,0.3)', padding: '0 3px', borderRadius: '3px' }}>src/test/munit/</code>)
+              </span>
+            </div>
+          </div>
         </div>
       )}
 
@@ -286,6 +294,15 @@ function ModeToggle({ mode, onChange }: { mode: InputMode; onChange: (m: InputMo
   );
 }
 
+/* ── GitHub URL type detection ── */
+function githubUrlType(value: string): 'blob' | 'tree' | 'raw' | null {
+  if (!value.startsWith('http')) return null;
+  if (/github\.com\/[^/]+\/[^/]+\/blob\//.test(value)) return 'blob';
+  if (/github\.com\/[^/]+\/[^/]+\/tree\//.test(value)) return 'tree';
+  if (/raw\.githubusercontent\.com/.test(value)) return 'raw';
+  return null;
+}
+
 /* ── Field Input ── */
 function FieldInput({
   label, icon, hint, value, placeholder, mono, isUrl, onChange,
@@ -295,6 +312,14 @@ function FieldInput({
   onChange: (v: string) => void;
 }) {
   const accentColor = isUrl ? '#06b6d4' : '#7c3aed';
+  const ghType = isUrl ? githubUrlType(value) : null;
+
+  const ghBadge: Record<string, { label: string; color: string; bg: string }> = {
+    blob: { label: '⚡ GitHub blob → auto-converted to raw', color: '#a5f3fc', bg: 'rgba(8,145,178,0.12)' },
+    tree: { label: '📂 GitHub tree → files fetched via API', color: '#86efac', bg: 'rgba(34,197,94,0.1)' },
+    raw:  { label: '✓ Raw URL — ready',                    color: '#86efac', bg: 'rgba(34,197,94,0.1)' },
+  };
+
   return (
     <div>
       <label style={{
@@ -323,7 +348,7 @@ function FieldInput({
             boxSizing: 'border-box',
           }}
         />
-        {value && (
+        {value && !ghType && (
           <div style={{
             position: 'absolute', right: '10px', top: '50%', transform: 'translateY(-50%)',
             width: '6px', height: '6px', borderRadius: '50%',
@@ -331,7 +356,20 @@ function FieldInput({
           }} />
         )}
       </div>
-      {hint && (
+
+      {/* GitHub URL type badge */}
+      {ghType && ghBadge[ghType] && (
+        <div style={{
+          display: 'inline-flex', alignItems: 'center', gap: '0.3rem',
+          marginTop: '0.35rem', padding: '0.2rem 0.6rem', borderRadius: '5px',
+          background: ghBadge[ghType].bg, fontSize: '0.65rem', fontWeight: 600,
+          color: ghBadge[ghType].color, letterSpacing: '0.02em',
+        }}>
+          {ghBadge[ghType].label}
+        </div>
+      )}
+
+      {hint && !ghType && (
         <p style={{ fontSize: '0.67rem', color: '#2d3748', marginTop: '0.3rem', marginLeft: '0.1rem', lineHeight: 1.4 }}>
           {hint}
         </p>

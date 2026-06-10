@@ -142,7 +142,24 @@ cleans up after the request.
 
 ## Changelog
 
-### 2026-06-10
+### 2026-06-10 (patch — GitHub URL fix)
+- **Backend: GitHub URL auto-conversion** — `validate()` now detects GitHub
+  `blob/` and `tree/` URLs and handles them correctly:
+  - `github.com/.../blob/...` → resolved to `raw.githubusercontent.com/...`
+    before download (was previously fetching the HTML page)
+  - `github.com/.../tree/...` → files listed + downloaded via GitHub Contents
+    API (`api.github.com/repos/.../contents/...`); handles 403 rate-limit error
+- **Frontend: GitHub URL badge** — `FieldInput` shows a contextual badge when
+  a GitHub URL is pasted: "⚡ blob → auto-converted", "📂 tree → API fetch",
+  "✓ raw — ready"
+- **Frontend: better hints** — URL fields now show placeholder examples using
+  `github.com/…/blob/…` and `github.com/…/tree/…` formats; MUnit field
+  clarifies it expects `TEST-*.xml` surefire reports (not `src/test/munit/`
+  source files)
+- **Frontend: info banner** — URL mode banner now explains blob vs tree
+  handling and warns that `src/test/munit/` is the wrong directory for reports
+
+### 2026-06-10 (initial)
 - **UI: URL input mode** — `InputPanel` now has a "📁 Folder Paths / 🔗 URLs"
   pill toggle; all three source fields accept direct download URLs in URL mode.
 - **Backend: URL download** — `validate()` detects `http(s)://` values,

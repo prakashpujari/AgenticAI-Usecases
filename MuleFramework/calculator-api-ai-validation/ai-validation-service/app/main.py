@@ -1,8 +1,10 @@
 """FastAPI entrypoint exposing the AI test-validation pipeline."""
 from __future__ import annotations
 
+import fnmatch
 import logging
 import os
+import re
 import shutil
 import tempfile
 from pathlib import Path
@@ -59,12 +61,106 @@ app.add_middleware(
 
 # ── URL helpers ────────────────────────────────────────────────────────────
 
+# Matches:  https://github.com/{owner}/{repo}/blob/{branch}/{path}
+_GH_BLOB = re.compile(
+    r"^https://github\.com/(?P<owner>[^/]+)/(?P<repo>[^/]+)/blob/(?P<branch>[^/]+)/(?P<path>.+)$"
+)
+# Matches:  https://github.com/{owner}/{repo}/tree/{branch}/{path}
+_GH_TREE = re.compile(
+    r"^https://github\.com/(?P<owner>[^/]+)/(?P<repo>[^/]+)/tree/(?P<branch>[^/]+)/(?P<path>.+)$"
+)
+
+_GH_API_HEADERS = {"Accept": "application/vnd.github+json", "X-GitHub-Api-Version": "2022-11-28"}
+
+
 def _is_url(value: str) -> bool:
     return value.startswith(("http://", "https://"))
 
 
+def _resolve_github_file_url(url: str) -> str:
+    """If *url* is a GitHub blob URL, return the equivalent raw.githubusercontent.com URL."""
+    m = _GH_BLOB.match(url)
+    if m:
+        raw = (
+            f"https://raw.githubusercontent.com"
+            f"/{m['owner']}/{m['repo']}/{m['branch']}/{m['path']}"
+        )
+        logger.info("GitHub blob → raw: %s", raw)
+        return raw
+    return url  # already a raw/direct URL
+
+
+def _download_github_tree_to_temp_dir(url: str, file_patterns: list[str]) -> Path:
+    """
+    Fetch all files matching *file_patterns* from a GitHub tree URL and write
+    them into a new temp directory.  Uses the unauthenticated GitHub Contents API.
+    """
+    m = _GH_TREE.match(url)
+    if not m:
+        raise HTTPException(status_code=400, detail=f"Not a recognised GitHub tree URL: {url}")
+
+    api_url = (
+        f"https://api.github.com/repos/{m['owner']}/{m['repo']}"
+        f"/contents/{m['path']}?ref={m['branch']}"
+    )
+    logger.info("GitHub tree API: %s", api_url)
+
+    tmp_dir = Path(tempfile.mkdtemp(prefix="mule-ai-"))
+    try:
+        with httpx.Client(follow_redirects=True, timeout=30, headers=_GH_API_HEADERS) as client:
+            r = client.get(api_url)
+            if r.status_code == 404:
+                raise HTTPException(status_code=400, detail=f"GitHub path not found: {url}")
+            if r.status_code == 403:
+                raise HTTPException(
+                    status_code=400,
+                    detail="GitHub API rate limit reached. Wait a minute and try again.",
+                )
+            r.raise_for_status()
+            items = r.json()
+
+        if not isinstance(items, list):
+            raise HTTPException(status_code=400, detail=f"Expected a directory at: {url}")
+
+        downloaded: list[str] = []
+        with httpx.Client(follow_redirects=True, timeout=30) as client:
+            for item in items:
+                if item.get("type") != "file":
+                    continue
+                name: str = item.get("name", "")
+                if not any(fnmatch.fnmatch(name, pat) for pat in file_patterns):
+                    continue
+                dl_url = item.get("download_url") or (
+                    f"https://raw.githubusercontent.com"
+                    f"/{m['owner']}/{m['repo']}/{m['branch']}/{m['path']}/{name}"
+                )
+                content_r = client.get(dl_url)
+                content_r.raise_for_status()
+                (tmp_dir / name).write_bytes(content_r.content)
+                downloaded.append(name)
+                logger.info("Downloaded %s from GitHub", name)
+
+        if not downloaded:
+            raise HTTPException(
+                status_code=400,
+                detail=(
+                    f"No files matching {file_patterns} found in GitHub directory. "
+                    f"URL: {url}"
+                ),
+            )
+
+    except HTTPException:
+        shutil.rmtree(tmp_dir, ignore_errors=True)
+        raise
+    except (httpx.HTTPStatusError, httpx.RequestError) as exc:
+        shutil.rmtree(tmp_dir, ignore_errors=True)
+        raise HTTPException(status_code=400, detail=f"Error fetching GitHub directory: {exc}")
+
+    return tmp_dir
+
+
 def _download_to_temp_dir(url: str) -> Path:
-    """Download a single file from *url* into a new temp directory; return the dir."""
+    """Download a single raw file URL into a new temp directory; return the dir."""
     tmp_dir = Path(tempfile.mkdtemp(prefix="mule-ai-"))
     filename = url.split("?")[0].rstrip("/").rsplit("/", 1)[-1] or "report.xml"
     try:
@@ -85,15 +181,16 @@ def _download_to_temp_dir(url: str) -> Path:
 
 
 def _download_to_temp_file(url: str, suffix: str = "") -> Path:
-    """Download a single file from *url* to a named temp file; return its Path."""
+    """Download a raw file URL to a named temp file; return its Path."""
+    resolved = _resolve_github_file_url(url)  # blob → raw if needed
     try:
         with httpx.Client(follow_redirects=True, timeout=30) as client:
-            r = client.get(url)
+            r = client.get(resolved)
             r.raise_for_status()
     except httpx.HTTPStatusError as exc:
         raise HTTPException(
             status_code=400,
-            detail=f"Failed to fetch URL (HTTP {exc.response.status_code}): {url}",
+            detail=f"Failed to fetch URL (HTTP {exc.response.status_code}): {resolved}",
         )
     except httpx.RequestError as exc:
         raise HTTPException(status_code=400, detail=f"Network error fetching URL: {exc}")
@@ -173,25 +270,38 @@ def validate(req: PipelineRequest) -> PipelineResponse:
     temp_files: list[Path] = []
     try:
         # ── Resolve munit_reports_dir ──────────────────────────────────────
+        # Accepts: local path | raw URL (single XML) | GitHub tree URL (directory)
         munit_raw = req.munit_reports_dir or settings.munit_reports_dir
         if _is_url(munit_raw):
-            munit_dir = _download_to_temp_dir(munit_raw)
+            if _GH_TREE.match(munit_raw):
+                # GitHub directory → fetch all XML + coverage JSON via API
+                munit_dir = _download_github_tree_to_temp_dir(
+                    munit_raw, ["TEST-*.xml", "*surefire*.xml", "munit-coverage.json", "*.xml"]
+                )
+            else:
+                munit_dir = _download_to_temp_dir(munit_raw)
             temp_dirs.append(munit_dir)
         else:
             munit_dir = Path(munit_raw)
 
         # ── Resolve raml_path ──────────────────────────────────────────────
+        # Accepts: local path | raw URL | GitHub blob URL (auto-converted to raw)
         raml_raw = req.raml_path or settings.raml_path
         if _is_url(raml_raw):
+            # _download_to_temp_file calls _resolve_github_file_url internally
             raml_path = _download_to_temp_file(raml_raw, suffix=".raml")
             temp_files.append(raml_path)
         else:
             raml_path = Path(raml_raw)
 
         # ── Resolve mule_xml_dir ───────────────────────────────────────────
+        # Accepts: local path | raw URL (single XML) | GitHub tree URL (directory)
         mule_raw = req.mule_xml_dir or settings.mule_xml_dir
         if _is_url(mule_raw):
-            mule_dir = _download_to_temp_dir(mule_raw)
+            if _GH_TREE.match(mule_raw):
+                mule_dir = _download_github_tree_to_temp_dir(mule_raw, ["*.xml"])
+            else:
+                mule_dir = _download_to_temp_dir(mule_raw)
             temp_dirs.append(mule_dir)
         else:
             mule_dir = Path(mule_raw)
