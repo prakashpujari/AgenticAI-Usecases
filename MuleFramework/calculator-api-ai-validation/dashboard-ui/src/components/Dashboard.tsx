@@ -136,9 +136,9 @@ export function Dashboard({ result, elapsed }: Props) {
         <StatTile label="Tests Failed"   value={dashboard.testsFailed}         icon="❌"
           accentColor={dashboard.testsFailed > 0 ? '#f87171' : '#4ade80'}
           sub={dashboard.testsFailed > 0 ? 'needs attention' : 'all passing'} />
-        <StatTile label="Coverage"       value={`${artifacts.munit_coverage}%`} icon="🎯"
-          accentColor={artifacts.munit_coverage >= 80 ? '#4ade80' : artifacts.munit_coverage >= 60 ? '#fbbf24' : '#f87171'}
-          sub="code coverage" />
+        <StatTile label="Coverage"       value={`${dashboard.coverage}%`} icon="🎯"
+          accentColor={dashboard.coverage >= 80 ? '#4ade80' : dashboard.coverage >= 60 ? '#fbbf24' : '#f87171'}
+          sub={artifacts.munit_coverage > 0 ? 'code coverage' : 'based on pass rate'} />
         <StatTile label="Production Score" value={dashboard.productionReadiness} icon="🚀"
           accentColor={grade.color} sub={`Grade ${grade.label}`} />
       </div>
