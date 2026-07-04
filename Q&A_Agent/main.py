@@ -224,6 +224,8 @@ def _run_pipeline(metrics: PipelineMetrics, *, input_source: "Path | str | None"
             logger.info("      ✓ PDF created: %s", resolved_source)
 
         # ── Stages 2-7: LangGraph state machine ──────────────────────────────
+        from src.output.output_formatter import _derive_filename_from_source
+        derived_filename = _derive_filename_from_source(source_label)
         run_pipeline_graph(
             input_source    = str(resolved_source),
             pipeline_id     = metrics.pipeline_id,
@@ -231,8 +233,8 @@ def _run_pipeline(metrics: PipelineMetrics, *, input_source: "Path | str | None"
             num_questions   = config.NUM_QUESTIONS,
             request_id      = metrics.pipeline_id,
             source_label    = source_label,
-            output_md_path  = str(config.OUTPUT_MARKDOWN_PATH),
-            output_pdf_path = str(config.OUTPUT_PDF_PATH),
+            output_md_path  = str(config.OUTPUT_DIR / f"{metrics.pipeline_id}_qa.md"),
+            output_pdf_path = str(config.OUTPUT_DIR / f"{metrics.pipeline_id}_{derived_filename}.pdf"),
             metrics         = metrics,
         )
 
@@ -261,11 +263,17 @@ def _run_pipeline(metrics: PipelineMetrics, *, input_source: "Path | str | None"
     metrics.finish_pipeline(status="success")
     metrics.save_report(config.METRICS_REPORT_PATH)
 
+    # Compute actual output paths for logging
+    from src.output.output_formatter import _derive_filename_from_source
+    derived_filename = _derive_filename_from_source(source_label)
+    actual_md_path = config.OUTPUT_DIR / f"{metrics.pipeline_id}_qa.md"
+    actual_pdf_path = config.OUTPUT_DIR / f"{metrics.pipeline_id}_{derived_filename}.pdf"
+
     logger.info("")
     logger.info("=" * 60)
     logger.info("  Pipeline %s — COMPLETE", metrics.pipeline_id)
-    logger.info("  Markdown  → %s", config.OUTPUT_MARKDOWN_PATH)
-    logger.info("  PDF       → %s", config.OUTPUT_PDF_PATH)
+    logger.info("  Markdown  → %s", actual_md_path)
+    logger.info("  PDF       → %s", actual_pdf_path)
     logger.info("  Metrics   → %s", config.METRICS_REPORT_PATH)
     logger.info("=" * 60)
 

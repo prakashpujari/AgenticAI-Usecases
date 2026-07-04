@@ -201,6 +201,13 @@ cleans up after the request.
 - **Frontend: info banner** — URL mode banner now explains blob vs tree
   handling and warns that `src/test/munit/` is the wrong directory for reports
 
+### 2026-06-10 (patch — dark / light mode toggle)
+- **UI: Theme toggle** — sun/moon button (☀️/🌙) in the header switches between dark and light modes
+- **UI: CSS custom properties** — all hardcoded dark colours replaced with `var()` tokens defined in `index.css`; dark defaults on `:root`, light overrides on `[data-theme="light"]`
+- **UI: Zero-flash persistence** — theme stored in `localStorage` (`mvh-theme`), initialised synchronously in `useState`, synced to `<html data-theme>` via `useLayoutEffect` before first paint
+- **UI: Full component coverage** — `App.tsx`, `Header.tsx`, `InputPanel.tsx`, `Dashboard.tsx`, `AgentCard.tsx`, `ScoreRing.tsx` all use CSS vars for background, border, text, shadow, and ring-track colours
+- **UI: Light theme** — white/`#f0f4ff` base, white cards, same purple/cyan accents, adapted scrollbar, autofill, and focus ring colours
+
 ### 2026-06-10 (initial)
 - **UI: URL input mode** — `InputPanel` now has a "📁 Folder Paths / 🔗 URLs"
   pill toggle; all three source fields accept direct download URLs in URL mode.

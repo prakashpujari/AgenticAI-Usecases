@@ -379,8 +379,10 @@ def _execute_pipeline(job: dict[str, Any]) -> None:
     cached_md = get_cached(cache_key)
     if cached_md:
         logger.info("Cache HIT for job %s — skipping pipeline", pipeline_id)
-        # Write the cached PDF from the markdown
-        pdf_path = str(config.OUTPUT_DIR / f"{pipeline_id}_qa.pdf")
+        # Write the cached PDF from the markdown with derived filename
+        from src.output.output_formatter import _derive_filename_from_source
+        derived_name = _derive_filename_from_source(input_source)
+        pdf_path = str(config.OUTPUT_DIR / f"{pipeline_id}_{derived_name}.pdf")
         try:
             md_path = config.OUTPUT_DIR / f"{pipeline_id}_qa.md"
             md_path.write_text(cached_md, encoding="utf-8")
@@ -404,6 +406,9 @@ def _execute_pipeline(job: dict[str, Any]) -> None:
         from src.pipeline.graph import run_pipeline_graph
 
         def _invoke_graph():
+            from src.output.output_formatter import _derive_filename_from_source
+            # Derive meaningful PDF filename from source
+            derived_name = _derive_filename_from_source(input_source)
             return run_pipeline_graph(
                 input_source    = input_source,
                 pipeline_id     = pipeline_id,
@@ -412,7 +417,7 @@ def _execute_pipeline(job: dict[str, Any]) -> None:
                 request_id      = request_id,
                 source_label    = input_source,
                 output_md_path  = str(config.OUTPUT_DIR / f"{pipeline_id}_qa.md"),
-                output_pdf_path = str(config.OUTPUT_DIR / f"{pipeline_id}_qa.pdf"),
+                output_pdf_path = str(config.OUTPUT_DIR / f"{pipeline_id}_{derived_name}.pdf"),
             )
 
         # Wrap in a parent LangSmith trace so all @traceable stage spans appear

@@ -280,7 +280,14 @@ def run_pipeline_graph(
         num_questions = config.NUM_QUESTIONS
 
     md_path  = output_md_path  or str(config.OUTPUT_DIR / f"{pipeline_id}_qa.md")
-    pdf_path = output_pdf_path or str(config.OUTPUT_DIR / f"{pipeline_id}_qa.pdf")
+
+    # Derive meaningful PDF filename from source name if not provided
+    if output_pdf_path:
+        pdf_path = output_pdf_path
+    else:
+        from src.output.output_formatter import _derive_filename_from_source
+        derived_name = _derive_filename_from_source(input_source)
+        pdf_path = str(config.OUTPUT_DIR / f"{pipeline_id}_{derived_name}")
 
     initial_state: PipelineState = {
         "input_source":   input_source,
